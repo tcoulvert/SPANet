@@ -49,6 +49,8 @@ def main(
     batch_size: Optional[int],
     limit_dataset: Optional[float],
     early_stopping: Optional[int],
+    classify: bool,
+    mass_classes: Optional[str],
 ):
     # Whether this is the master process
     master = "NODE_RANK" not in environ
@@ -83,6 +85,28 @@ def main(
             print(f"Overriding epochs: {epochs}")
         options.epochs = epochs
 
+    # Classification mode configuration
+    if classify:
+        if master:
+            print("Enabling mass classification mode")
+        options.use_mass_classification = True
+
+        # Parse mass classes from comma-separated string or use defaults
+        if mass_classes is not None:
+            options.mass_classes = [float(x.strip()) for x in mass_classes.split(',')]
+        else:
+            # Default mass classes: 200, 300, 400, ..., 1000 GeV
+            options.mass_classes = [200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0, 1000.0]
+
+        if master:
+            print(f"Mass classes: {options.mass_classes}")
+
+        # Enable classification loss if not already set
+        if options.classification_loss_scale == 0:
+            options.classification_loss_scale = 1.0
+            if master:
+                print(f"Setting classification_loss_scale to 1.0")
+
     # Display configuration
     if master:
         options.display()
@@ -104,14 +128,23 @@ def main(
     log_dir = getcwd() if log_dir is None else log_dir
     logger = TensorBoardLogger(save_dir=log_dir, name=name)
 
-    # Setup callbacks
+    # Setup callbacks - use different metrics for classification vs regression mode
+    if classify:
+        checkpoint_monitor = 'validation_accuracy'
+        checkpoint_mode = 'max'
+        checkpoint_filename = '{epoch}-{step}-{validation_accuracy:.4f}'
+    else:
+        checkpoint_monitor = 'validation_mae'
+        checkpoint_mode = 'min'
+        checkpoint_filename = '{epoch}-{step}-{validation_mae:.4f}'
+
     callbacks = [
         ModelCheckpoint(
             verbose=options.verbose_output,
-            filename='{epoch}-{step}-{validation_mae:.4f}',
-            monitor='validation_mae',
+            filename=checkpoint_filename,
+            monitor=checkpoint_monitor,
             save_top_k=3,
-            mode='min',
+            mode=checkpoint_mode,
             save_last=True
         ),
         LearningRateMonitor(),
@@ -121,9 +154,9 @@ def main(
 
     if early_stopping is not None and early_stopping > 0:
         callbacks.append(EarlyStopping(
-            monitor='validation_mae',
+            monitor=checkpoint_monitor,
             patience=early_stopping,
-            mode='min',
+            mode=checkpoint_mode,
             verbose=True
         ))
 
@@ -200,5 +233,13 @@ if __name__ == '__main__':
 
     parser.add_argument("-v", "--verbose", action='store_true',
                         help="Verbose output")
+
+    parser.add_argument("--classify", action="store_true",
+                        help="Use classification mode instead of regression. "
+                             "Predicts mass class labels instead of continuous mass values.")
+
+    parser.add_argument("--mass_classes", type=str, default=None,
+                        help="Comma-separated list of mass values (in GeV) to use as classes. "
+                             "Default: 200,300,400,500,600,700,800,900,1000")
 
     main(**parser.parse_args().__dict__)

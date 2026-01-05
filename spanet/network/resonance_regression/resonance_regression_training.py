@@ -1,11 +1,12 @@
 """
 Training logic for Resonance Regression model.
 
-Implements training_step with regression loss only.
+Implements training_step with regression loss and optional classification loss.
 """
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 from spanet.options import Options
@@ -81,6 +82,59 @@ class ResonanceRegressionTraining(ResonanceRegressionNetwork):
 
         return torch.stack(loss_terms).sum()
 
+    def compute_classification_loss(
+        self,
+        predictions: Dict[str, Tensor],
+        regression_targets: Dict[str, Tensor]
+    ) -> Tensor:
+        """Compute classification loss for mass class prediction.
+
+        Parameters
+        ----------
+        predictions : Dict[str, Tensor]
+            Model classification predictions (logits) for each target. Shape: [B, num_classes]
+        regression_targets : Dict[str, Tensor]
+            Ground truth regression values (continuous mass values).
+            These will be converted to class labels.
+
+        Returns
+        -------
+        Tensor
+            Total classification loss.
+        """
+        loss_terms = []
+        mass_classes_tensor = torch.tensor(self.mass_classes, device=self.device, dtype=torch.float32)
+
+        for key in predictions:
+            prediction = predictions[key]  # [B, num_classes]
+            target_values = regression_targets[key]  # [B] - continuous mass values
+
+            # Handle NaN targets (missing values)
+            valid_mask = ~torch.isnan(target_values)
+            if valid_mask.sum() == 0:
+                continue
+
+            # Convert continuous mass to class labels by finding nearest mass class
+            target_valid = target_values[valid_mask].unsqueeze(-1)  # [N, 1]
+            distances = torch.abs(target_valid - mass_classes_tensor)  # [N, num_classes]
+            target_classes = distances.argmin(dim=-1)  # [N]
+
+            # Compute cross-entropy loss
+            loss = F.cross_entropy(
+                prediction[valid_mask],
+                target_classes
+            )
+
+            # Log individual classification losses
+            self.log(f"loss/classification/{key}", loss, sync_dist=True)
+
+            loss_terms.append(self.options.classification_loss_scale * loss)
+
+        if not loss_terms:
+            return torch.tensor(0.0, device=self.device)
+
+        return torch.stack(loss_terms).sum()
+
     def training_step(self, batch: Batch, batch_idx: int) -> Tensor:
         """Perform a single training step.
 
@@ -104,6 +158,14 @@ class ResonanceRegressionTraining(ResonanceRegressionNetwork):
             outputs.regressions,
             batch.regression_targets
         )
+
+        # Compute classification loss (if enabled)
+        if outputs.classifications is not None and self.options.classification_loss_scale > 0:
+            classification_loss = self.compute_classification_loss(
+                outputs.classifications,
+                batch.regression_targets
+            )
+            total_loss = total_loss + classification_loss
 
         # Log total loss
         self.log("loss/total_loss", total_loss, sync_dist=True, prog_bar=True)

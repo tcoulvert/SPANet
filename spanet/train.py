@@ -21,7 +21,7 @@ from pytorch_lightning.callbacks import (
     TQDMProgressBar
 )
 
-from spanet import JetReconstructionModel, Options
+from spanet import JetReconstructionModel, Options, create_model
 
 
 def main(
@@ -111,7 +111,8 @@ def main(
     # -------------------------------------------------------------------------------------------------------
 
     # Create the initial model on the CPU
-    model = JetReconstructionModel(options, torch_script)
+    # Uses factory function to select pairwise model if use_pairwise_interactions=True
+    model = create_model(options, torch_script)
 
     if state_dict is not None:
         if master:

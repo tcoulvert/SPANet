@@ -137,6 +137,25 @@ class Options(Namespace):
         self.linear_prelu_activation: bool = True
 
         # =========================================================================================
+        # Pairwise Interaction Options (Particle Transformer-style)
+        # =========================================================================================
+
+        # Enable pairwise interaction features in attention mechanism.
+        # When True, uses JetReconstructionModelWithPairwise instead of JetReconstructionModel.
+        self.use_pairwise_interactions: bool = False
+
+        # Number of pairwise features to compute between particle pairs.
+        # Default 4: ln(kT), ln(z), ln(deltaR), ln(m^2)
+        self.num_pairwise_features: int = 4
+
+        # Hidden dimension for pairwise feature embedding MLP.
+        self.pairwise_embedding_dim: int = 8
+
+        # Which SEQUENTIAL input source to use for pairwise features.
+        # Empty string means auto-detect the first SEQUENTIAL input.
+        self.pairwise_input_source: str = ""
+
+        # =========================================================================================
         # Dataset Options
         # =========================================================================================
 
@@ -234,6 +253,14 @@ class Options(Namespace):
 
         # Scalar term for classification Cross Entropy loss term
         self.classification_loss_scale: float = 0.0
+
+        # Whether to use classification mode instead of regression for resonance models.
+        # When True, the model predicts mass class labels instead of continuous mass values.
+        self.use_mass_classification: bool = False
+
+        # Mass classes for classification mode (list of mass values in GeV).
+        # Each mass point becomes a class label (e.g., [200, 300, 400, ...] -> classes 0, 1, 2, ...)
+        self.mass_classes: list = []
 
         # Automatically balance loss terms using Jacobians.
         self.balance_losses: bool = True
