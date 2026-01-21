@@ -52,6 +52,11 @@ class ResonanceRegressionTraining(ResonanceRegressionNetwork):
 
             prediction = predictions[key]
             target = targets[key]
+            # Handle 2D targets/predictions (like gen_mass_logits) - convert to 1D class indices
+            if target.ndim > 1:
+                target = target.argmax(dim=-1)
+            if prediction.ndim > 1:
+                prediction = prediction.argmax(dim=-1)
 
             # Get normalization statistics from decoder
             mean = self.regression_decoder.networks[key].mean
@@ -85,17 +90,16 @@ class ResonanceRegressionTraining(ResonanceRegressionNetwork):
     def compute_classification_loss(
         self,
         predictions: Dict[str, Tensor],
-        regression_targets: Dict[str, Tensor]
+        targets: Dict[str, Tensor]
     ) -> Tensor:
-        """Compute classification loss for mass class prediction.
+        """Compute classification loss for classification targets.
 
         Parameters
         ----------
         predictions : Dict[str, Tensor]
             Model classification predictions (logits) for each target. Shape: [B, num_classes]
-        regression_targets : Dict[str, Tensor]
-            Ground truth regression values (continuous mass values).
-            These will be converted to class labels.
+        targets : Dict[str, Tensor]
+            Ground truth classification labels (integer class indices). Shape: [B]
 
         Returns
         -------
@@ -103,26 +107,24 @@ class ResonanceRegressionTraining(ResonanceRegressionNetwork):
             Total classification loss.
         """
         loss_terms = []
-        mass_classes_tensor = torch.tensor(self.mass_classes, device=self.device, dtype=torch.float32)
 
         for key in predictions:
-            prediction = predictions[key]  # [B, num_classes]
-            target_values = regression_targets[key]  # [B] - continuous mass values
+            if key not in targets:
+                continue
 
-            # Handle NaN targets (missing values)
-            valid_mask = ~torch.isnan(target_values)
+            prediction = predictions[key]  # [B, num_classes]
+            target = targets[key]  # [B] - integer class labels
+
+            # Handle missing values: -1 indicates no class for this event
+            valid_mask = target >= 0
             if valid_mask.sum() == 0:
                 continue
 
-            # Convert continuous mass to class labels by finding nearest mass class
-            target_valid = target_values[valid_mask].unsqueeze(-1)  # [N, 1]
-            distances = torch.abs(target_valid - mass_classes_tensor)  # [N, num_classes]
-            target_classes = distances.argmin(dim=-1)  # [N]
-
-            # Compute cross-entropy loss
+            # Compute cross-entropy loss with ignore_index=-1 for missing values
             loss = F.cross_entropy(
                 prediction[valid_mask],
-                target_classes
+                target[valid_mask],
+                ignore_index=-1
             )
 
             # Log individual classification losses
@@ -163,11 +165,13 @@ class ResonanceRegressionTraining(ResonanceRegressionNetwork):
         if outputs.classifications is not None and self.options.classification_loss_scale > 0:
             classification_loss = self.compute_classification_loss(
                 outputs.classifications,
-                batch.regression_targets
+                batch.classification_targets
             )
             total_loss = total_loss + classification_loss
 
         # Log total loss
         self.log("loss/total_loss", total_loss, sync_dist=True, prog_bar=True)
+        # Also log a slash-free alias for convenience in filenames/monitors.
+        self.log("loss_total_loss", total_loss, sync_dist=True, prog_bar=False)
 
         return total_loss

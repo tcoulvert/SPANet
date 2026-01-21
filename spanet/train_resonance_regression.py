@@ -50,7 +50,6 @@ def main(
     limit_dataset: Optional[float],
     early_stopping: Optional[int],
     classify: bool,
-    mass_classes: Optional[str],
 ):
     # Whether this is the master process
     master = "NODE_RANK" not in environ
@@ -86,20 +85,11 @@ def main(
         options.epochs = epochs
 
     # Classification mode configuration
+    # Classifications are now read directly from the dataset (CLASSIFICATIONS section in HDF5)
     if classify:
         if master:
-            print("Enabling mass classification mode")
-        options.use_mass_classification = True
-
-        # Parse mass classes from comma-separated string or use defaults
-        if mass_classes is not None:
-            options.mass_classes = [float(x.strip()) for x in mass_classes.split(',')]
-        else:
-            # Default mass classes: 200, 300, 400, ..., 1000 GeV
-            options.mass_classes = [200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0, 1000.0]
-
-        if master:
-            print(f"Mass classes: {options.mass_classes}")
+            print("Enabling classification mode")
+            print("Classification targets will be read from dataset CLASSIFICATIONS section")
 
         # Enable classification loss if not already set
         if options.classification_loss_scale == 0:
@@ -129,14 +119,19 @@ def main(
     logger = TensorBoardLogger(save_dir=log_dir, name=name)
 
     # Setup callbacks - use different metrics for classification vs regression mode
+    #
+    # IMPORTANT:
+    # - Avoid putting metric names with "/" into checkpoint filenames, otherwise Lightning will
+    #   interpret them as directories (e.g. "loss/total_loss" -> "loss/total_loss=...ckpt"),
+    #   creating lots of nested/empty folders.
     if classify:
-        checkpoint_monitor = 'validation_accuracy'
-        checkpoint_mode = 'max'
-        checkpoint_filename = '{epoch}-{step}-{validation_accuracy:.4f}'
+        checkpoint_monitor = "validation_accuracy"
+        checkpoint_mode = "max"
+        checkpoint_filename = "epoch_{epoch}_val_acc_{validation_accuracy:.4f}"
     else:
-        checkpoint_monitor = 'validation_mae'
-        checkpoint_mode = 'min'
-        checkpoint_filename = '{epoch}-{step}-{validation_mae:.4f}'
+        checkpoint_monitor = "validation_mae"
+        checkpoint_mode = "min"
+        checkpoint_filename = "epoch_{epoch}_val_mae_{validation_mae:.4f}"
 
     callbacks = [
         ModelCheckpoint(
@@ -145,7 +140,8 @@ def main(
             monitor=checkpoint_monitor,
             save_top_k=3,
             mode=checkpoint_mode,
-            save_last=True
+            save_last=True,
+            auto_insert_metric_name=False,
         ),
         LearningRateMonitor(),
         RichProgressBar() if _RICH_AVAILABLE else TQDMProgressBar(),
@@ -235,11 +231,7 @@ if __name__ == '__main__':
                         help="Verbose output")
 
     parser.add_argument("--classify", action="store_true",
-                        help="Use classification mode instead of regression. "
-                             "Predicts mass class labels instead of continuous mass values.")
-
-    parser.add_argument("--mass_classes", type=str, default=None,
-                        help="Comma-separated list of mass values (in GeV) to use as classes. "
-                             "Default: 200,300,400,500,600,700,800,900,1000")
+                        help="Enable classification mode. Classification targets are read from "
+                             "the dataset CLASSIFICATIONS section. Requires classification_loss_scale > 0.")
 
     main(**parser.parse_args().__dict__)

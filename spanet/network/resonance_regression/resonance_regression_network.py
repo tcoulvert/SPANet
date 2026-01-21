@@ -15,7 +15,7 @@ from spanet.dataset.types import Tuple, Source
 from spanet.network.layers.vector_encoder import JetEncoder
 from spanet.network.layers.embedding import MultiInputVectorEmbedding
 from spanet.network.layers.regression_decoder import RegressionDecoder
-from spanet.network.layers.branch_linear import BranchLinear
+from spanet.network.layers.classification_decoder import ClassificationDecoder
 
 from spanet.network.resonance_regression.resonance_regression_base import ResonanceRegressionBase
 
@@ -40,8 +40,6 @@ class ResonanceRegressionNetwork(ResonanceRegressionBase):
         compile_module = torch.jit.script if torch_script else lambda x: x
 
         self.hidden_dim = options.hidden_dim
-        self.use_mass_classification = options.use_mass_classification
-        self.mass_classes = options.mass_classes
 
         # Embedding layer: converts jet features to hidden dimension
         self.embedding = compile_module(MultiInputVectorEmbedding(
@@ -58,20 +56,14 @@ class ResonanceRegressionNetwork(ResonanceRegressionBase):
             self.training_dataset
         ))
 
-        # Classification decoder: predicts mass class from event vector (if enabled)
+        # Classification decoder: predicts classification targets from event vector (if enabled)
+        # Only create if classification_loss_scale > 0 and dataset has classifications
         self.classification_decoder = None
-        if self.use_mass_classification and self.mass_classes:
-            num_classes = len(self.mass_classes)
-            # Create a classification head for each regression target
-            from collections import OrderedDict
-            networks = OrderedDict()
-            for name in self.training_dataset.regressions.keys():
-                networks[name] = BranchLinear(
-                    options,
-                    options.num_classification_layers,
-                    num_classes
-                )
-            self.classification_decoder = nn.ModuleDict(networks)
+        if options.classification_loss_scale > 0 and len(self.training_dataset.classifications) > 0:
+            self.classification_decoder = compile_module(ClassificationDecoder(
+                options,
+                self.training_dataset
+            ))
 
     @property
     def event_info(self):
@@ -108,10 +100,7 @@ class ResonanceRegressionNetwork(ResonanceRegressionBase):
         # Predict classification targets (if enabled)
         classifications = None
         if self.classification_decoder is not None:
-            classifications = {
-                key: network(event_vector)
-                for key, network in self.classification_decoder.items()
-            }
+            classifications = self.classification_decoder(encoded_vectors)
 
         return RegressionOutputs(
             event_vector=event_vector,

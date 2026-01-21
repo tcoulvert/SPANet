@@ -53,8 +53,15 @@ class ResonanceRegressionValidation(ResonanceRegressionNetwork):
 
         # Compute metrics for each regression target
         for key in predictions:
+            if key not in regression_targets_np:
+                continue
             pred = predictions[key]
             target = regression_targets_np[key]
+            # Handle 2D targets/predictions (like gen_mass_logits) - convert to 1D class indices
+            if hasattr(target, "ndim") and target.ndim > 1:
+                target = target.argmax(axis=-1)
+            if hasattr(pred, "ndim") and pred.ndim > 1:
+                pred = pred.argmax(axis=-1)
 
             # Handle NaN targets
             valid_mask = ~np.isnan(target)
@@ -105,52 +112,64 @@ class ResonanceRegressionValidation(ResonanceRegressionNetwork):
                         self.global_step
                     )
 
-        # Compute classification metrics if classification mode is enabled
-        if self.use_mass_classification and self.mass_classes:
-            mass_classes_np = np.array(self.mass_classes)
+        # Compute classification metrics if classification targets exist
+        classification_targets_np = {
+            key: value.detach().cpu().numpy()
+            for key, value in classification_targets.items()
+        }
 
-            for key in regression_targets_np:
-                if f"{key}_pred_class" not in predictions:
-                    continue
+        # Check for classification predictions (they have _pred_class suffix)
+        for cls_key in classification_targets_np:
+            pred_class_key = f"{cls_key}_pred_class"
+            if pred_class_key not in predictions:
+                continue
 
-                pred_class = predictions[f"{key}_pred_class"]
-                target_values = regression_targets_np[key]
+            pred_class = predictions[pred_class_key]
+            # Handle case where pred_class is 2D logits instead of 1D class indices
+            if pred_class.ndim > 1:
+                pred_class = pred_class.argmax(axis=-1)
+            else:
+                pred_class = pred_class if isinstance(pred_class, np.ndarray) else pred_class.cpu().numpy()
+            
+            target_class = classification_targets_np[cls_key]  # [B] - integer class labels
 
-                # Handle NaN targets
-                valid_mask = ~np.isnan(target_values)
-                if valid_mask.sum() == 0:
-                    continue
+            # Handle missing values: -1 indicates no class for this event
+            valid_mask = target_class >= 0
+            if valid_mask.sum() == 0:
+                continue
 
-                # Convert continuous mass to class labels
-                target_valid = target_values[valid_mask]
-                distances = np.abs(target_valid[:, np.newaxis] - mass_classes_np)
-                target_class = distances.argmin(axis=-1)
-                pred_class_valid = pred_class[valid_mask]
+            pred_class_valid = pred_class[valid_mask]
+            target_class_valid = target_class[valid_mask]
 
-                # Accuracy
-                accuracy = (pred_class_valid == target_class).mean()
-                self.log(f"CLASSIFICATION/{key}_accuracy", accuracy, sync_dist=True)
-                metrics[f"{key}_accuracy"] = accuracy
+            # Accuracy
+            accuracy = (pred_class_valid == target_class_valid).mean()
+            self.log(f"CLASSIFICATION/{cls_key}_accuracy", accuracy, sync_dist=True)
+            metrics[f"{cls_key}_accuracy"] = accuracy
 
-                # Per-class accuracy (for debugging)
-                for cls_idx, mass_val in enumerate(self.mass_classes):
-                    cls_mask = target_class == cls_idx
-                    if cls_mask.sum() > 0:
-                        cls_acc = (pred_class_valid[cls_mask] == cls_idx).mean()
-                        self.log(f"CLASSIFICATION/{key}_acc_mass_{int(mass_val)}", cls_acc, sync_dist=True)
-                        metrics[f"{key}_acc_mass_{int(mass_val)}"] = cls_acc
+            # Per-class accuracy (for debugging)
+            unique_classes = np.unique(target_class_valid)
+            for cls_idx in unique_classes:
+                cls_mask = target_class_valid == cls_idx
+                if cls_mask.sum() > 0:
+                    cls_acc = (pred_class_valid[cls_mask] == cls_idx).mean()
+                    self.log(f"CLASSIFICATION/{cls_key}_acc_class_{int(cls_idx)}", cls_acc, sync_dist=True)
+                    metrics[f"{cls_key}_acc_class_{int(cls_idx)}"] = cls_acc
 
         # Use MAE as validation metric (lower is better) for regression mode
         # Use accuracy for classification mode
         if metrics:
-            first_key = list(regression_targets_np.keys())[0]
-            if f"{first_key}_mae" in metrics:
-                self.log("validation_mae", metrics[f"{first_key}_mae"], sync_dist=True)
-                self.log("validation_mse", metrics[f"{first_key}_mse"], sync_dist=True)
-                if f"{first_key}_mape" in metrics:
-                    self.log("validation_mape", metrics[f"{first_key}_mape"], sync_dist=True)
-            if f"{first_key}_accuracy" in metrics:
-                self.log("validation_accuracy", metrics[f"{first_key}_accuracy"], sync_dist=True)
+            if regression_targets_np:
+                first_reg_key = list(regression_targets_np.keys())[0]
+                if f"{first_reg_key}_mae" in metrics:
+                    self.log("validation_mae", metrics[f"{first_reg_key}_mae"], sync_dist=True)
+                    self.log("validation_mse", metrics[f"{first_reg_key}_mse"], sync_dist=True)
+                    if f"{first_reg_key}_mape" in metrics:
+                        self.log("validation_mape", metrics[f"{first_reg_key}_mape"], sync_dist=True)
+            
+            if classification_targets_np:
+                first_cls_key = list(classification_targets_np.keys())[0]
+                if f"{first_cls_key}_accuracy" in metrics:
+                    self.log("validation_accuracy", metrics[f"{first_cls_key}_accuracy"], sync_dist=True)
 
         return metrics
 
