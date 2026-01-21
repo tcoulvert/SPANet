@@ -1,5 +1,4 @@
 from spanet.network.jet_reconstruction import JetReconstructionModel
-from spanet.network.jet_reconstruction_pairwise import JetReconstructionModelWithPairwise
 from spanet.dataset import JetReconstructionDataset
 from spanet.options import Options
 from spanet.interface import SPANetInterface
@@ -17,10 +16,8 @@ def create_model(options: Options, torch_script: bool = False):
 
     Returns
     -------
-    JetReconstructionModel or JetReconstructionModelWithPairwise
-        The appropriate model class based on options.use_pairwise_interactions
+    JetReconstructionModel
+        Jet reconstruction model. If options.use_pairwise_interactions is True,
+        the pairwise-aware hooks inside the jet reconstruction network are used.
     """
-    if getattr(options, 'use_pairwise_interactions', False):
-        return JetReconstructionModelWithPairwise(options, torch_script)
-    else:
-        return JetReconstructionModel(options, torch_script)
+    return JetReconstructionModel(options, torch_script)

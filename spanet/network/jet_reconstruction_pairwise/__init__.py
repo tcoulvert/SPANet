@@ -1,66 +1,30 @@
-"""Jet reconstruction with Particle Transformer-style pairwise interactions.
+"""Pairwise interaction support for SPANet jet reconstruction.
 
-This module provides pairwise-aware versions of the SPANet components.
-Use JetReconstructionModelWithPairwise as a drop-in replacement for
-JetReconstructionModel when pairwise interactions are desired.
+This package provides pairwise-aware embedding and encoder components that are
+optionally enabled via Options.use_pairwise_interactions.
 
-Usage:
-    In options.json, set "use_pairwise_interactions": true
-    The factory function in spanet/__init__.py will automatically select
-    the appropriate model class.
+The main jet reconstruction model remains `JetReconstructionModel`; pairwise
+functionality is activated through hooks in
+`spanet.network.jet_reconstruction.jet_reconstruction_network.JetReconstructionNetwork`.
 """
-from spanet.network.jet_reconstruction_pairwise.pairwise_features import (
+
+from .pairwise_features import (
     PairwiseFeatureComputer,
     PairwiseEmbedding,
     auto_detect_kinematic_features,
     sincos_to_phi,
-    delta_phi
 )
-
-from spanet.network.jet_reconstruction_pairwise.pairwise_transformer import (
-    GTrXLWithPairwise,
-    GatedTransformerWithPairwise,
-    create_transformer_with_pairwise
-)
-
-from spanet.network.jet_reconstruction_pairwise.pairwise_encoder import (
-    StackedEncoderWithPairwise,
-    JetEncoderWithPairwise
-)
-
-from spanet.network.jet_reconstruction_pairwise.pairwise_embedding import (
-    MultiInputVectorEmbeddingWithPairwise
-)
-
-from spanet.network.jet_reconstruction_pairwise.jet_reconstruction_pairwise import (
-    JetReconstructionNetworkWithPairwise
-)
-
-from spanet.network.jet_reconstruction_pairwise.jet_reconstruction_model_pairwise import (
-    JetReconstructionModelWithPairwise
-)
+from .pairwise_transformer import create_transformer_with_pairwise
+from .pairwise_encoder import JetEncoderWithPairwise, StackedEncoderWithPairwise
+from .pairwise_embedding import MultiInputVectorEmbeddingWithPairwise
 
 __all__ = [
-    # Feature computation
-    'PairwiseFeatureComputer',
-    'PairwiseEmbedding',
-    'auto_detect_kinematic_features',
-    'sincos_to_phi',
-    'delta_phi',
-
-    # Transformer
-    'GTrXLWithPairwise',
-    'GatedTransformerWithPairwise',
-    'create_transformer_with_pairwise',
-
-    # Encoder
-    'StackedEncoderWithPairwise',
-    'JetEncoderWithPairwise',
-
-    # Embedding
-    'MultiInputVectorEmbeddingWithPairwise',
-
-    # Network and Model
-    'JetReconstructionNetworkWithPairwise',
-    'JetReconstructionModelWithPairwise',
+    "PairwiseFeatureComputer",
+    "PairwiseEmbedding",
+    "auto_detect_kinematic_features",
+    "sincos_to_phi",
+    "create_transformer_with_pairwise",
+    "JetEncoderWithPairwise",
+    "StackedEncoderWithPairwise",
+    "MultiInputVectorEmbeddingWithPairwise",
 ]

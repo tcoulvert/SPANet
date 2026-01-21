@@ -14,6 +14,18 @@ from spanet.network.layers.classification_decoder import ClassificationDecoder
 from spanet.network.prediction_selection import extract_predictions
 from spanet.network.jet_reconstruction.jet_reconstruction_base import JetReconstructionBase
 
+# Conditionally import pairwise components
+try:
+    from spanet.network.jet_reconstruction_pairwise.pairwise_embedding import (
+        MultiInputVectorEmbeddingWithPairwise
+    )
+    from spanet.network.jet_reconstruction_pairwise.pairwise_encoder import (
+        JetEncoderWithPairwise
+    )
+    PAIRWISE_AVAILABLE = True
+except ImportError:
+    PAIRWISE_AVAILABLE = False
+
 TArray = np.ndarray
 
 
@@ -40,14 +52,34 @@ class JetReconstructionNetwork(JetReconstructionBase):
 
         self.hidden_dim = options.hidden_dim
 
-        self.embedding = compile_module(MultiInputVectorEmbedding(
-            options,
-            self.training_dataset
-        ))
-
-        self.encoder = compile_module(JetEncoder(
-            options,
-        ))
+        # Check if pairwise interactions should be enabled
+        self.use_pairwise = getattr(options, 'use_pairwise_interactions', False)
+        
+        if self.use_pairwise:
+            if not PAIRWISE_AVAILABLE:
+                raise ImportError(
+                    "Pairwise interactions requested but pairwise modules not available. "
+                    "Ensure spanet.network.jet_reconstruction_pairwise is installed."
+                )
+            # Use pairwise-aware embedding
+            self.embedding = compile_module(MultiInputVectorEmbeddingWithPairwise(
+                options,
+                self.training_dataset
+            ))
+            # Use pairwise-aware encoder
+            self.encoder = compile_module(JetEncoderWithPairwise(
+                options,
+            ))
+        else:
+            # Use standard embedding
+            self.embedding = compile_module(MultiInputVectorEmbedding(
+                options,
+                self.training_dataset
+            ))
+            # Use standard encoder
+            self.encoder = compile_module(JetEncoder(
+                options,
+            ))
 
         self.branch_decoders = nn.ModuleList([
             BranchDecoder(
@@ -80,10 +112,16 @@ class JetReconstructionNetwork(JetReconstructionBase):
 
     def forward(self, sources: Tuple[Source, ...]) -> Outputs:
         # Embed all of the different input regression_vectors into the same latent space.
-        embeddings, padding_masks, sequence_masks, global_masks = self.embedding(sources)
-
-        # Extract features from data using transformer
-        hidden, event_vector = self.encoder(embeddings, padding_masks, sequence_masks)
+        if self.use_pairwise:
+            # Pairwise embedding returns 5 values: embeddings, padding_masks, sequence_masks, global_masks, pairwise_bias
+            embeddings, padding_masks, sequence_masks, global_masks, pairwise_bias = self.embedding(sources)
+            # Extract features from data using transformer with pairwise attention bias
+            hidden, event_vector = self.encoder(embeddings, padding_masks, sequence_masks, pairwise_bias)
+        else:
+            # Standard embedding returns 4 values: embeddings, padding_masks, sequence_masks, global_masks
+            embeddings, padding_masks, sequence_masks, global_masks = self.embedding(sources)
+            # Extract features from data using transformer
+            hidden, event_vector = self.encoder(embeddings, padding_masks, sequence_masks)
 
         # Create output lists for each particle in event.
         assignments = []
