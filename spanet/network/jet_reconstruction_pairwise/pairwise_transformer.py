@@ -4,7 +4,7 @@ These classes extend the standard SPANet transformer layers to accept
 pairwise attention bias, which is added to the attention scores before softmax.
 """
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 from torch import nn, Tensor
@@ -28,7 +28,20 @@ class GTrXLWithPairwise(nn.Module):
             dropout=dropout,
         )
 
-        self.feed_forward = GRUBlock(options, hidden_dim, hidden_dim, skip_connection=True)
+        # Conditionally use MoE or standard feedforward
+        self.use_moe = getattr(options, 'use_moe', False)
+        if self.use_moe:
+            from spanet.network.layers.moe import MoELayer
+            self.feed_forward = MoELayer(
+                options,
+                hidden_dim,
+                hidden_dim,
+                num_experts=getattr(options, 'num_experts', 8),
+                num_experts_per_tok=getattr(options, 'num_experts_per_tok', 2),
+                skip_connection=True
+            )
+        else:
+            self.feed_forward = GRUBlock(options, hidden_dim, hidden_dim, skip_connection=True)
 
     def forward(
         self,
@@ -36,7 +49,7 @@ class GTrXLWithPairwise(nn.Module):
         padding_mask: Tensor,
         sequence_mask: Tensor,
         pairwise_bias: Optional[Tensor] = None,
-    ) -> Tensor:
+    ) -> Tuple[Tensor, Optional[Tensor]]:
         output = self.attention_norm(x)
         # Convert padding_mask to float to match pairwise_bias dtype (PyTorch requirement)
         # bool True (padding) -> float 1.0 (ignore), bool False (real) -> float 0.0 (attend)
@@ -51,7 +64,12 @@ class GTrXLWithPairwise(nn.Module):
         )
 
         output = self.attention_gate(output, x)
-        return self.feed_forward(output, sequence_mask)
+        if self.use_moe:
+            output, gate_logits = self.feed_forward(output, sequence_mask)
+            return output, gate_logits
+        else:
+            output = self.feed_forward(output, sequence_mask)
+            return output, None
 
 
 class GatedTransformerWithPairwise(TransformerBase):
@@ -60,6 +78,7 @@ class GatedTransformerWithPairwise(TransformerBase):
     def __init__(self, options: Options, num_layers: int):
         super().__init__(options, num_layers)
 
+        self.use_moe = getattr(options, 'use_moe', False)
         self.layers = nn.ModuleList(
             [GTrXLWithPairwise(options, self.hidden_dim, self.num_heads, self.dropout) for _ in range(num_layers)]
         )
@@ -70,11 +89,19 @@ class GatedTransformerWithPairwise(TransformerBase):
         padding_mask: Tensor,
         sequence_mask: Tensor,
         pairwise_bias: Optional[Tensor] = None,
-    ) -> Tensor:
+    ) -> Tuple[Tensor, Optional[list]]:
         output = x
+        gate_logits_list = [] if self.use_moe else None
+        
         for layer in self.layers:
-            output = layer(output, padding_mask, sequence_mask, pairwise_bias)
-        return output
+            if self.use_moe:
+                output, gate_logits = layer(output, padding_mask, sequence_mask, pairwise_bias)
+                if gate_logits is not None:
+                    gate_logits_list.append(gate_logits)
+            else:
+                output, _ = layer(output, padding_mask, sequence_mask, pairwise_bias)
+        
+        return output, gate_logits_list
 
 
 def create_transformer_with_pairwise(options: Options, num_layers: int) -> nn.Module:

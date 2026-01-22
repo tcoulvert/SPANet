@@ -156,6 +156,24 @@ class Options(Namespace):
         self.pairwise_input_source: str = ""
 
         # =========================================================================================
+        # Mixture of Experts (MoE) Options
+        # =========================================================================================
+
+        # Enable Mixture of Experts layers in transformer feedforward networks.
+        # When True, replaces standard feedforward layers with MoE layers.
+        self.use_moe: bool = False
+
+        # Total number of expert networks in each MoE layer.
+        self.num_experts: int = 8
+
+        # Number of experts to use per token (top-k selection).
+        self.num_experts_per_tok: int = 2
+
+        # Scale factor for MoE auxiliary loss (load balancing loss).
+        # Set to 0.0 to disable MoE loss.
+        self.moe_loss_scale: float = 0.01
+
+        # =========================================================================================
         # Dataset Options
         # =========================================================================================
 

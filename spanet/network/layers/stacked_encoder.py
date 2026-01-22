@@ -1,5 +1,4 @@
-from typing import Tuple
-
+from typing import Tuple, Optional
 import torch
 from torch import Tensor, nn
 
@@ -22,7 +21,7 @@ class StackedEncoder(nn.Module):
         self.encoder = create_transformer(options, num_encoder_layers)
         self.embedding = create_linear_stack(options, num_linear_layers, options.hidden_dim, options.skip_connections)
 
-    def forward(self, encoded_vectors: Tensor, padding_mask: Tensor, sequence_mask: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, encoded_vectors: Tensor, padding_mask: Tensor, sequence_mask: Tensor) -> Tuple[Tensor, Tensor, Optional[list]]:
         """ Apply time-independent linear layers followed by a transformer encoder.
 
         This is used during the branches and symmetric attention layers.
@@ -79,7 +78,7 @@ class StackedEncoder(nn.Module):
         # particle_vector: [B, D]
         # encoded_vectors: [T, B, D]
         # -----------------------------------------------------------------------------
-        combined_vectors = self.encoder(combined_vectors, combined_padding_mask, combined_sequence_mask)
+        combined_vectors, gate_logits_list = self.encoder(combined_vectors, combined_padding_mask, combined_sequence_mask)
         particle_vector, encoded_vectors = combined_vectors[0], combined_vectors[1:]
 
-        return encoded_vectors, particle_vector
+        return encoded_vectors, particle_vector, gate_logits_list

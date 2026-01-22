@@ -1,3 +1,4 @@
+from typing import Optional, Tuple
 from torch import Tensor, nn
 
 from spanet.options import Options
@@ -17,5 +18,5 @@ class TransformerBase(nn.Module):
         self.transformer_activation = options.transformer_activation
         self.dim_feedforward = int(round(options.transformer_dim_scale * options.hidden_dim))
 
-    def forward(self, x: Tensor, padding_mask: Tensor, sequence_mask: Tensor) -> Tensor:
-        return x
+    def forward(self, x: Tensor, padding_mask: Tensor, sequence_mask: Tensor) -> Tuple[Tensor, Optional[list]]:
+        return x, None

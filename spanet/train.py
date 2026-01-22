@@ -165,7 +165,7 @@ def main(
     trainer = pl.Trainer(
         accelerator="gpu" if options.num_gpu > 0 else "auto",
         devices=options.num_gpu if options.num_gpu > 0 else "auto",
-        strategy="ddp" if options.num_gpu > 1 else "auto",
+        strategy="ddp_find_unused_parameters_false" if options.num_gpu > 1 else "auto",
         precision="16-mixed" if fp16 else "32-true",
 
         gradient_clip_val=options.gradient_clip if options.gradient_clip > 0 else None,

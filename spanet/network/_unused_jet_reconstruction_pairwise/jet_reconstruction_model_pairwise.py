@@ -1,4 +1,14 @@
-from typing import Tuple, Dict, List, Optional
+"""Complete jet reconstruction model with pairwise interactions.
+
+This module creates the full model by combining:
+- JetReconstructionNetworkWithPairwise (forward pass with pairwise attention)
+- Training methods from JetReconstructionTraining
+- Validation methods from JetReconstructionValidation
+
+The implementation reuses the original training/validation code since they
+only depend on the forward() method, which is provided by our pairwise network.
+"""
+from typing import Tuple, Dict, List
 
 import numpy as np
 import torch
@@ -8,21 +18,30 @@ from torch.nn import functional as F
 from spanet.options import Options
 from spanet.dataset.types import Batch, Source, AssignmentTargets
 from spanet.dataset.regressions import regression_loss
-from spanet.network.jet_reconstruction.jet_reconstruction_network import JetReconstructionNetwork
-from spanet.network.utilities.divergence_losses import assignment_cross_entropy_loss, jensen_shannon_divergence
-from spanet.network.layers.moe import compute_moe_loss
+from spanet.network.utilities.divergence_losses import (
+    assignment_cross_entropy_loss,
+    jensen_shannon_divergence
+)
+
+from spanet.network.jet_reconstruction_pairwise.jet_reconstruction_pairwise import (
+    JetReconstructionNetworkWithPairwise
+)
 
 
 def numpy_tensor_array(tensor_list):
     output = np.empty(len(tensor_list), dtype=object)
     output[:] = tensor_list
-
     return output
 
 
-class JetReconstructionTraining(JetReconstructionNetwork):
+class JetReconstructionTrainingWithPairwise(JetReconstructionNetworkWithPairwise):
+    """Training mixin for pairwise jet reconstruction network.
+
+    Provides training_step and loss computation methods.
+    """
+
     def __init__(self, options: Options, torch_script: bool = False):
-        super(JetReconstructionTraining, self).__init__(options, torch_script)
+        super().__init__(options, torch_script)
 
         self.log_clip = torch.log(10 * torch.scalar_tensor(torch.finfo(torch.float32).eps)).item()
 
@@ -32,49 +51,46 @@ class JetReconstructionTraining(JetReconstructionNetwork):
             for particle in self.event_particle_names
         }
 
-    def particle_symmetric_loss(self, assignment: Tensor, detection: Tensor, target: Tensor, mask: Tensor, weight: Tensor) -> Tensor:
-        assignment_loss = assignment_cross_entropy_loss(assignment, target, mask, weight, self.options.focal_gamma)
-        detection_loss = F.binary_cross_entropy_with_logits(detection, mask.float(), weight=weight, reduction='none')
+    def particle_symmetric_loss(
+        self, assignment: Tensor, detection: Tensor, target: Tensor, mask: Tensor, weight: Tensor
+    ) -> Tensor:
+        assignment_loss = assignment_cross_entropy_loss(
+            assignment, target, mask, weight, self.options.focal_gamma
+        )
+        detection_loss = F.binary_cross_entropy_with_logits(
+            detection, mask.float(), weight=weight, reduction='none'
+        )
 
         return torch.stack((
             self.options.assignment_loss_scale * assignment_loss,
             self.options.detection_loss_scale * detection_loss
         ))
 
-    def compute_symmetric_losses(self, assignments: List[Tensor], detections: List[Tensor], targets):
+    def compute_symmetric_losses(
+        self, assignments: List[Tensor], detections: List[Tensor], targets
+    ):
         symmetric_losses = []
 
-        # TODO think of a way to avoid this memory transfer but keep permutation indices synced with checkpoint
-        # Compute a separate loss term for every possible target permutation.
         for permutation in self.event_permutation_tensor.cpu().numpy():
-
-            # Find the assignment loss for each particle in this permutation.
             current_permutation_loss = tuple(
                 self.particle_symmetric_loss(assignment, detection, target, mask, weight)
                 for assignment, detection, (target, mask, weight)
                 in zip(assignments, detections, targets[permutation])
             )
 
-            # The loss for a single permutation is the sum of particle losses.
             symmetric_losses.append(torch.stack(current_permutation_loss))
 
-        # Shape: (NUM_PERMUTATIONS, NUM_PARTICLES, 2, BATCH_SIZE)
         return torch.stack(symmetric_losses)
 
     def combine_symmetric_losses(self, symmetric_losses: Tensor) -> Tuple[Tensor, Tensor]:
-        # Default option is to find the minimum loss term of the symmetric options.
-        # We also store which permutation we used to achieve that minimal loss.
-        # combined_loss, _ = symmetric_losses.min(0)
         total_symmetric_loss = symmetric_losses.sum((1, 2))
         index = total_symmetric_loss.argmin(0)
 
         combined_loss = torch.gather(symmetric_losses, 0, index.expand_as(symmetric_losses))[0]
 
-        # Simple average of all losses as a baseline.
         if self.options.combine_pair_loss.lower() == "mean":
             combined_loss = symmetric_losses.mean(0)
 
-        # Soft minimum function to smoothly fuse all loss function weighted by their size.
         if self.options.combine_pair_loss.lower() == "softmin":
             weights = F.softmin(total_symmetric_loss, 0)
             weights = weights.unsqueeze(1).unsqueeze(1)
@@ -88,49 +104,38 @@ class JetReconstructionTraining(JetReconstructionNetwork):
         detections: List[Tensor],
         targets: Tuple[Tuple[Tensor, Tensor, Tensor], ...]
     ) -> Tuple[Tensor, Tensor]:
-        # We are only going to look at a single prediction points on the distribution for more stable loss calculation
-        # We multiply the softmax values by the size of the permutation group to make every target the same
-        # regardless of the number of sub-jets in each target particle
-        assignments = [prediction + torch.log(torch.scalar_tensor(decoder.num_targets))
-                       for prediction, decoder in zip(assignments, self.branch_decoders)]
+        assignments = [
+            prediction + torch.log(torch.scalar_tensor(decoder.num_targets))
+            for prediction, decoder in zip(assignments, self.branch_decoders)
+        ]
 
-        # Convert the targets into a numpy array of tensors so we can use fancy indexing from numpy
         targets = numpy_tensor_array(targets)
-
-        # Compute the loss on every valid permutation of the targets
         symmetric_losses = self.compute_symmetric_losses(assignments, detections, targets)
 
-        # Squash the permutation losses into a single value.
         return self.combine_symmetric_losses(symmetric_losses)
 
     def symmetric_divergence_loss(self, predictions: List[Tensor], masks: Tensor) -> Tensor:
         divergence_loss = []
 
         for i, j in self.event_info.event_transpositions:
-            # Symmetric divergence between these two distributions
             div = jensen_shannon_divergence(predictions[i], predictions[j])
-
-            # ERF term for loss
             loss = torch.exp(-(div ** 2))
             loss = loss.masked_fill(~masks[i], 0.0)
             loss = loss.masked_fill(~masks[j], 0.0)
-
             divergence_loss.append(loss)
 
         return torch.stack(divergence_loss).mean(0)
-        # return -1 * torch.stack(divergence_loss).sum(0) / len(self.training_dataset.unordered_event_transpositions)
 
     def add_kl_loss(
-            self,
-            total_loss: List[Tensor],
-            assignments: List[Tensor],
-            masks: Tensor,
-            weights: Tensor
+        self,
+        total_loss: List[Tensor],
+        assignments: List[Tensor],
+        masks: Tensor,
+        weights: Tensor
     ) -> List[Tensor]:
         if len(self.event_info.event_transpositions) == 0:
             return total_loss
 
-        # Compute the symmetric loss between all valid pairs of distributions.
         kl_loss = self.symmetric_divergence_loss(assignments, masks)
         kl_loss = (weights * kl_loss).sum() / masks.sum()
 
@@ -142,10 +147,10 @@ class JetReconstructionTraining(JetReconstructionNetwork):
         return total_loss + [self.options.kl_loss_scale * kl_loss]
 
     def add_regression_loss(
-            self,
-            total_loss: List[Tensor],
-            predictions: Dict[str, Tensor],
-            targets:  Dict[str, Tensor]
+        self,
+        total_loss: List[Tensor],
+        predictions: Dict[str, Tensor],
+        targets: Dict[str, Tensor]
     ) -> List[Tensor]:
         regression_terms = []
 
@@ -175,10 +180,10 @@ class JetReconstructionTraining(JetReconstructionNetwork):
         return total_loss + regression_terms
 
     def add_classification_loss(
-            self,
-            total_loss: List[Tensor],
-            predictions: Dict[str, Tensor],
-            targets: Dict[str, Tensor]
+        self,
+        total_loss: List[Tensor],
+        predictions: Dict[str, Tensor],
+        targets: Dict[str, Tensor]
     ) -> List[Tensor]:
         classification_terms = []
 
@@ -202,49 +207,31 @@ class JetReconstructionTraining(JetReconstructionNetwork):
         return total_loss + classification_terms
 
     def training_step(self, batch: Batch, batch_nb: int) -> Dict[str, Tensor]:
-        # ===================================================================================================
-        # Network Forward Pass
-        # ---------------------------------------------------------------------------------------------------
         outputs = self.forward(batch.sources)
 
-        # ===================================================================================================
-        # Initial log-likelihood loss for classification task
-        # ---------------------------------------------------------------------------------------------------
         symmetric_losses, best_indices = self.symmetric_losses(
             outputs.assignments,
             outputs.detections,
             batch.assignment_targets,
         )
 
-        # Construct the newly permuted masks based on the minimal permutation found during NLL loss.
         permutations = self.event_permutation_tensor[best_indices].T
         masks = torch.stack([target.mask for target in batch.assignment_targets])
         masks = torch.gather(masks, 0, permutations)
 
-        # ===================================================================================================
-        # Balance the loss based on the distribution of various classes in the dataset.
-        # ---------------------------------------------------------------------------------------------------
-
-        # Default unity weight on correct device.
         weights = torch.ones_like(symmetric_losses)
 
-        # Balance based on the particles present - only used in partial event training
         if self.balance_particles:
             class_indices = (masks * self.particle_index_tensor.unsqueeze(1)).sum(0)
             weights *= self.particle_weights_tensor[class_indices]
 
-        # Balance based on the number of jets in this event
         if self.balance_jets:
             weights *= self.jet_weights_tensor[batch.num_vectors]
 
-        # Take the weighted average of the symmetric loss terms.
         masks = masks.unsqueeze(1)
         symmetric_losses = (weights * symmetric_losses).sum(-1) / torch.clamp(masks.sum(-1), 1, None)
         assignment_loss, detection_loss = torch.unbind(symmetric_losses, 1)
 
-        # ===================================================================================================
-        # Some basic logging
-        # ---------------------------------------------------------------------------------------------------
         with torch.no_grad():
             for name, l in zip(self.training_dataset.assignments, assignment_loss):
                 self.log(f"loss/{name}/assignment_loss", l, sync_dist=True)
@@ -258,9 +245,6 @@ class JetReconstructionTraining(JetReconstructionNetwork):
             if torch.isinf(assignment_loss).any():
                 raise ValueError("Assignment targets contain a collision.")
 
-        # ===================================================================================================
-        # Start constructing the list of all computed loss terms.
-        # ---------------------------------------------------------------------------------------------------
         total_loss = []
 
         if self.options.assignment_loss_scale > 0:
@@ -269,9 +253,6 @@ class JetReconstructionTraining(JetReconstructionNetwork):
         if self.options.detection_loss_scale > 0:
             total_loss.append(detection_loss)
 
-        # ===================================================================================================
-        # Auxiliary loss terms which are added to reconstruction loss for alternative targets.
-        # ---------------------------------------------------------------------------------------------------
         if self.options.kl_loss_scale > 0:
             total_loss = self.add_kl_loss(total_loss, outputs.assignments, masks, weights)
 
@@ -281,58 +262,142 @@ class JetReconstructionTraining(JetReconstructionNetwork):
         if self.options.classification_loss_scale > 0:
             total_loss = self.add_classification_loss(total_loss, outputs.classifications, batch.classification_targets)
 
-        # ===================================================================================================
-        # MoE auxiliary loss for load balancing
-        # ---------------------------------------------------------------------------------------------------
-        if getattr(self.options, 'use_moe', False) and getattr(self.options, 'moe_loss_scale', 0.0) > 0:
-            moe_loss = self.add_moe_loss(total_loss)
-            if moe_loss is not None:
-                total_loss = moe_loss
-
-        # ===================================================================================================
-        # Combine and return the loss
-        # ---------------------------------------------------------------------------------------------------
         total_loss = torch.cat([loss.view(-1) for loss in total_loss])
 
         self.log("loss/total_loss", total_loss.sum(), sync_dist=True)
 
         return total_loss.mean()
-    
-    def add_moe_loss(self, total_loss: List[Tensor]) -> Optional[List[Tensor]]:
-        """Add MoE auxiliary loss for load balancing.
-        
-        Parameters
-        ----------
-        total_loss: List[Tensor]
-            Current list of loss terms
-            
-        Returns
-        -------
-        List[Tensor]
-            Updated list of loss terms with MoE loss added
-        """
-        if not hasattr(self, '_gate_logits_list') or self._gate_logits_list is None:
-            return total_loss
-        
-        # Collect all gate logits from all transformer layers
-        all_gate_logits = []
-        for gate_logits in self._gate_logits_list:
-            if gate_logits is not None:
-                all_gate_logits.append(gate_logits)
-        
-        if len(all_gate_logits) == 0:
-            return total_loss
-        
-        # Compute MoE loss for each layer and average
-        moe_losses = []
-        num_experts = getattr(self.options, 'num_experts', 8)
-        for gate_logits in all_gate_logits:
-            moe_losses.append(compute_moe_loss(gate_logits, num_experts))
-        
-        # Average MoE loss across all layers
-        moe_loss = torch.stack(moe_losses).mean()
-        
-        with torch.no_grad():
-            self.log("loss/moe_loss", moe_loss, sync_dist=True)
-        
-        return total_loss + [self.options.moe_loss_scale * moe_loss]
+
+
+class JetReconstructionValidationWithPairwise(JetReconstructionNetworkWithPairwise):
+    """Validation mixin for pairwise jet reconstruction network.
+
+    Provides validation_step and validation metrics.
+    """
+
+    def __init__(self, options: Options, torch_script: bool = False):
+        super().__init__(options, torch_script)
+
+    def validation_step(self, batch: Batch, batch_nb: int) -> None:
+        # Run the prediction step to get both assignments and detections
+        assignments, detections, regressions, classifications = self.predict(batch.sources)
+
+        # Force all detections to be true if we don't train on detection
+        if self.options.detection_loss_scale == 0:
+            detections += 1
+
+        # Compute validation metrics
+        self._log_assignment_accuracy(assignments, batch)
+        self._log_detection_accuracy(detections, batch)
+        self._log_regression_accuracy(regressions, batch)
+        self._log_classification_accuracy(classifications, batch)
+
+    def _log_assignment_accuracy(self, assignments: np.ndarray, batch: Batch) -> None:
+        """Log assignment accuracy metrics."""
+        event_info = self.training_dataset.event_info
+        total_weighted_correct = 0.0
+        total_weight = 0.0
+
+        for particle_index, event_particle in enumerate(event_info.event_particles):
+            product_particles = event_info.product_particles[event_particle]
+            target = batch.assignment_targets[particle_index]
+            mask = target.mask.cpu().numpy()
+            weights = target.weight.cpu().numpy()
+            particle_correct = np.ones_like(mask, dtype=bool)
+
+            for product_index, product_particle in enumerate(product_particles):
+                # Get predictions and targets for this particle
+                predicted = assignments[particle_index][:, product_index]
+                actual = target.indices[:, product_index].cpu().numpy()
+                current_mask = mask
+
+                # Compute accuracy only on valid events
+                correct = (predicted == actual) & current_mask
+                total = current_mask.sum()
+
+                if total > 0:
+                    accuracy = correct.sum() / total
+                    self.log(
+                        f"validation/{event_particle}/{product_particle}/accuracy",
+                        accuracy,
+                        sync_dist=True
+                    )
+
+                # Track per-event correctness across all daughters of this particle
+                particle_correct &= np.logical_or(~current_mask, predicted == actual)
+
+            # Accumulate weighted event-level accuracy for the monitored metric
+            effective_weights = weights * mask
+            total_weighted_correct += (particle_correct.astype(float) * effective_weights).sum()
+            total_weight += effective_weights.sum()
+
+        if total_weight > 0:
+            average_accuracy = total_weighted_correct / total_weight
+            self.log("validation_average_jet_accuracy", average_accuracy, sync_dist=True, on_epoch=True)
+
+    def _log_detection_accuracy(self, detections: np.ndarray, batch: Batch) -> None:
+        """Log detection accuracy metrics."""
+        event_info = self.training_dataset.event_info
+
+        for particle_index, event_particle in enumerate(event_info.event_particles):
+            target = batch.assignment_targets[particle_index]
+
+            predicted = detections[particle_index] >= 0.5
+            actual = target.mask.cpu().numpy()
+
+            accuracy = (predicted == actual).mean()
+            self.log(
+                f"validation/{event_particle}/detection_accuracy",
+                accuracy,
+                sync_dist=True
+            )
+
+    def _log_regression_accuracy(self, regressions: Dict[str, np.ndarray], batch: Batch) -> None:
+        """Log regression MAE metrics."""
+        for key, prediction in regressions.items():
+            if key not in batch.regression_targets:
+                continue
+
+            target = batch.regression_targets[key].cpu().numpy()
+            mask = ~np.isnan(target)
+
+            if mask.sum() > 0:
+                mae = np.abs(prediction[mask] - target[mask]).mean()
+                self.log(f"validation/{key}/mae", mae, sync_dist=True)
+
+    def _log_classification_accuracy(self, classifications: Dict[str, np.ndarray], batch: Batch) -> None:
+        """Log classification accuracy metrics."""
+        for key, prediction in classifications.items():
+            if key not in batch.classification_targets:
+                continue
+
+            target = batch.classification_targets[key].cpu().numpy()
+            mask = target >= 0
+
+            if mask.sum() > 0:
+                accuracy = (prediction[mask] == target[mask]).mean()
+                self.log(f"validation/{key}/accuracy", accuracy, sync_dist=True)
+
+
+class JetReconstructionModelWithPairwise(
+    JetReconstructionValidationWithPairwise,
+    JetReconstructionTrainingWithPairwise
+):
+    """Complete jet reconstruction model with pairwise attention.
+
+    This is the main model class that combines:
+    - Pairwise attention in the central encoder
+    - Training logic (training_step, loss computation)
+    - Validation logic (validation_step, metrics)
+
+    Use this as a drop-in replacement for JetReconstructionModel when
+    pairwise interactions are desired.
+
+    Parameters
+    ----------
+    options : Options
+        SPANet configuration options. Set use_pairwise_interactions=True.
+    torch_script : bool
+        Whether to compile with TorchScript
+    """
+    pass
