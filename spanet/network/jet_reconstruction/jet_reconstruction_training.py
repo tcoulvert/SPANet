@@ -214,7 +214,7 @@ class JetReconstructionTraining(JetReconstructionNetwork):
             outputs.detections,
             batch.assignment_targets,
         )
-        if torch.isinf(symmetric_losses).any(): return None
+        #if torch.isinf(symmetric_losses).any(): return None
 
         # Construct the newly permuted masks based on the minimal permutation found during NLL loss.
         permutations = self.event_permutation_tensor[best_indices].T
