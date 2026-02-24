@@ -22,11 +22,10 @@ def assignment_cross_entropy_loss(prediction: Tensor, target_data: Tensor, targe
     # Flatten the target and predicted data to be one dimensional
     ravel_target = (target_data * ravel_sizes).sum(1)
     ravel_prediction = prediction.reshape(batch_size, -1).contiguous()
-
-    # Hotfix to mask out bad events that pass mask
-    target_mask = torch.logical_and(target_mask, ~torch.isinf(log_probability))
     
     log_probability = ravel_prediction.gather(-1, ravel_target.view(-1, 1)).squeeze()
+    # Hotfix to mask out bad events that pass mask
+    target_mask = torch.logical_and(target_mask, ~torch.isinf(log_probability))
     log_probability = log_probability.masked_fill(~target_mask, 0.0)
 
     focal_scale = (1 - torch.exp(log_probability)) ** gamma
