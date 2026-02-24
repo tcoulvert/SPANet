@@ -92,6 +92,8 @@ class JetReconstructionDataset(Dataset):
             # Adjust limit index into a standard format.
             limit_index = self.compute_limit_index(limit_index, randomization_seed)
 
+            print(f"limit_index = {limit_index} for h5file\n  {self.data_file}")
+
             # Load source features from hdf5 file, processing them depending on their type.
             self.sources = OrderedDict((
                 (input_name, create_source_input(self.event_info, file, input_name, self.num_events, limit_index))
