@@ -239,7 +239,12 @@ class JetReconstructionTraining(JetReconstructionNetwork):
 
         # Take the weighted average of the symmetric loss terms.
         masks = masks.unsqueeze(1)
+        print('-'*60)
+        print(f"symmetric losses before clamp = \n  {symmetric_losses}")
+        print(f"any symmetric losses nan? -> {torch.isnan(symmetric_losses).any()}")
         symmetric_losses = (weights * symmetric_losses).sum(-1) / torch.clamp(masks.sum(-1), 1, None)
+        print(f"symmetric losses after clamp = \n  {symmetric_losses}")
+        print(f"any symmetric losses nan? -> {torch.isnan(symmetric_losses).any()}")
         assignment_loss, detection_loss = torch.unbind(symmetric_losses, 1)
 
         # ===================================================================================================
