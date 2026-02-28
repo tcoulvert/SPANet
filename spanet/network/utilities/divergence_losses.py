@@ -3,7 +3,7 @@ from torch import Tensor
 from torch.nn import functional as F
 
 
-@torch.jit.script
+#@torch.jit.script
 def assignment_cross_entropy_loss(prediction: Tensor, target_data: Tensor, target_mask: Tensor, weight: Tensor, gamma: float) -> Tensor:
     batch_size = prediction.shape[0]
     prediction_shape = prediction.shape[1:]
