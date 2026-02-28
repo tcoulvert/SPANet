@@ -12,6 +12,9 @@ def masked_log_softmax(
     mask (setting invalid values to -inf) but also preventing any gradient from flowing
     at all to masked values!
     """
+    print('vector before mask fill \n  ', vector)
+    print('any vector nan?', torch.isnan(vector).any())
+    print('any vector inf?', torch.isinf(vector).any())
 
     if mask is not None:
         # Create a -inf with the correct device and datatype
@@ -22,8 +25,10 @@ def masked_log_softmax(
     print('-'*60)
     print('vector \n  ', vector)
     print('any vector nan?', torch.isnan(vector).any())
+    print('any vector inf?', torch.isinf(vector).any())
     print('log_softmax \n  ', F.log_softmax(vector, dim=dim))
     print('any log_softmax nan?', torch.isnan(F.log_softmax(vector, dim=dim)).any())
+    print('any log_softmax inf?', torch.isinf(F.log_softmax(vector, dim=dim)).any())
 
     return F.log_softmax(vector, dim=dim)
 
