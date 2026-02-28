@@ -156,6 +156,13 @@ class BranchDecoder(nn.Module):
 
         assignment_mask = self.create_output_mask(assignment, sequential_sequence_mask)
 
+        print('assignment \n  ', assignment)
+        print('any assignment nan?', torch.isnan(assignment).any())
+        print('any assignment inf?', torch.isinf(assignment).any())
+        print('assignment_mask \n  ', assignment_mask)
+        print('any assignment_mask nan?', torch.isnan(assignment_mask).any())
+        print('any assignment_mask inf?', torch.isinf(assignment_mask).any())
+
         # ---------------------------------------------------------------------------
         # Need to reshape output to make softmax-calculation easier.
         # We transform the mask and output into a flat representation.
