@@ -19,6 +19,11 @@ def masked_log_softmax(
 
         # Replace all masked entries in the output with the gradient-less -inf
         vector = torch.masked_fill(vector, ~mask, fill_value)
+    print('-'*60)
+    print('vector \n  ', vector)
+    print('any vector nan?', torch.isnan(vector).any())
+    print('log_softmax \n  ', F.log_softmax(vector, dim=dim))
+    print('any log_softmax nan?', torch.isnan(F.log_softmax(vector, dim=dim)).any())
 
     return F.log_softmax(vector, dim=dim)
 
