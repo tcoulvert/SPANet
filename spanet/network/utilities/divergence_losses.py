@@ -27,8 +27,10 @@ def assignment_cross_entropy_loss(prediction: Tensor, target_data: Tensor, targe
     # # Hotfix to mask out bad events that pass mask
     # target_mask = torch.logical_and(target_mask, ~torch.isinf(log_probability))
     print('-'*60, 'log_probability \n  ', log_probability)
-    print('any log_probabilty nan?'
+    print('any log_probabilty nan? ', torch.isnan(log_probability).any())
     log_probability = log_probability.masked_fill(~target_mask, 0.0)
+    print('-'*60, 'log_probability after mask \n  ', log_probability)
+    print('any log_probabilty after mask nan? ', torch.isnan(log_probability).any())
 
     focal_scale = (1 - torch.exp(log_probability)) ** gamma
 
