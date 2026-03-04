@@ -1,11 +1,13 @@
+import re
+import warnings
 from argparse import ArgumentParser
 from collections import defaultdict
 from glob import glob
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import h5py
 import numpy as np
-from os.path import exists, join
+from os.path import dirname, exists, join
 import torch
 from torch.utils._pytree import tree_map
 
@@ -17,6 +19,40 @@ from spanet.dataset.event_info import EventInfo
 from spanet.dataset.jet_reconstruction_dataset import JetReconstructionDataset
 from spanet.network.resonance_regression import ResonanceRegressionModel
 
+# Checkpoint filename patterns: classification uses val_acc, regression uses val_mae or validation_mae
+_VAL_ACC_RE = re.compile(r"val_acc_([\d.]+)")
+_VAL_MAE_RE = re.compile(r"(?:validation_mae=([\d.]+)|val_mae_([\d.]+))")
+
+
+def _pick_best_checkpoint(checkpoints: List[str], classify: bool) -> str:
+    """Pick checkpoint with best val_acc (classify) or best validation MAE (regression)."""
+    if classify:
+        # Maximize validation accuracy
+        best_path, best_val = None, -1.0
+        for path in checkpoints:
+            name = path.split("/")[-1] if "/" in path else path
+            m = _VAL_ACC_RE.search(name)
+            if m:
+                acc = float(m.group(1))
+                if acc > best_val:
+                    best_val, best_path = acc, path
+        if best_path is not None:
+            return best_path
+    else:
+        # Minimize validation MAE
+        best_path, best_mae = None, float("inf")
+        for path in checkpoints:
+            name = path.split("/")[-1] if "/" in path else path
+            m = _VAL_MAE_RE.search(name)
+            if m:
+                mae = float(m.group(1) or m.group(2))
+                if mae < best_mae:
+                    best_mae, best_path = mae, path
+        if best_path is not None:
+            return best_path
+    # Fallback: no metric found, use lexicographically last
+    return sorted(checkpoints)[-1]
+
 
 def load_model(
     log_directory: str,
@@ -26,10 +62,17 @@ def load_model(
     cuda: bool = False,
     fp16: bool = False,
     checkpoint: Optional[str] = None,
-    create_testing_dataset: bool = True
+    create_testing_dataset: bool = True,
+    classify: bool = False,
 ) -> ResonanceRegressionModel:
     if checkpoint is None:
-        checkpoint = sorted(glob(f"{log_directory}/checkpoints/epoch*"))[-1]
+        checkpoints = sorted(glob(f"{log_directory}/checkpoints/epoch*"))
+        if not checkpoints:
+            raise FileNotFoundError(
+                f"No checkpoints found in {log_directory}/checkpoints/ (expected files matching 'epoch*'). "
+                "Pass a checkpoint path via -ckpt/--checkpoint, or use the log directory as the first argument."
+            )
+        checkpoint = _pick_best_checkpoint(checkpoints, classify)
         print(f"Loading: {checkpoint}")
 
     checkpoint = torch.load(checkpoint, map_location='cpu')
@@ -96,8 +139,9 @@ def create_prediction_dataset(data_file: str, options: Options) -> JetReconstruc
 def evaluate_on_test_dataset(
     model: ResonanceRegressionModel,
     fp16: bool = False
-) -> Dict[str, np.ndarray]:
+) -> tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
     full_regressions = defaultdict(list)
+    full_classifications = defaultdict(list)
 
     dataloader = model.test_dataloader()
     dataloader = progress.track(dataloader, description="Evaluating Model")
@@ -111,13 +155,21 @@ def evaluate_on_test_dataset(
         for key, value in outputs.regressions.items():
             full_regressions[key].append(value.detach().cpu().numpy())
 
-    return {key: np.concatenate(values) for key, values in full_regressions.items()}
+        if outputs.classifications is not None:
+            for key, logits in outputs.classifications.items():
+                probs = torch.softmax(logits.float(), dim=-1)
+                full_classifications[key].append(probs.detach().cpu().numpy())
+
+    regressions = {key: np.concatenate(values) for key, values in full_regressions.items()}
+    classifications = {key: np.concatenate(values) for key, values in full_classifications.items()}
+    return regressions, classifications
 
 
 def create_hdf5_output(
     output_file: str,
     dataset,
-    regressions: Dict[str, np.ndarray]
+    regressions: Dict[str, np.ndarray],
+    classifications: Optional[Dict[str, np.ndarray]] = None
 ):
     print(f"Creating output file at: {output_file}")
     with h5py.File(output_file, 'w') as output:
@@ -131,6 +183,14 @@ def create_hdf5_output(
 
         for name, regression in regressions.items():
             output.create_dataset(f"{SpecialKey.Regressions}/{name}", data=regression)
+
+        if classifications:
+            for name, proba in classifications.items():
+                output.create_dataset(
+                    f"{SpecialKey.Classifications}/{name}",
+                    data=proba,
+                    dtype=np.float32
+                )
 
 
 def select_reco_mass_key(regressions: Dict[str, np.ndarray], reco_mass_key: Optional[str]) -> str:
@@ -168,18 +228,56 @@ def write_reco_mass_to_input(
         reco_group.create_dataset("MASK", data=np.ones((reco_mass.shape[0],), dtype=bool))
 
 
+# HDF5 location for classification probabilities when using --add_prediction_to_input_h5
+MASS_CATEGORY_GROUP = "MassCategory"
+MASS_CATEGORY_PROBABILITY_DATASET = "probability"
+
+
+def write_classification_probs_to_input(
+    input_file: str,
+    classifications: Dict[str, np.ndarray]
+):
+    """Write classification probability vectors into INPUTS/MassCategory/probability."""
+    if not classifications:
+        return
+    # Use the first (typically only) classification output for mass category
+    first_key = next(iter(classifications))
+    proba = classifications[first_key]
+    if len(classifications) > 1:
+        warnings.warn(
+            f"Multiple classification outputs found; writing only '{first_key}' to "
+            f"INPUTS/{MASS_CATEGORY_GROUP}/{MASS_CATEGORY_PROBABILITY_DATASET}.",
+            UserWarning,
+            stacklevel=2
+        )
+    with h5py.File(input_file, 'r+') as output:
+        inputs_group = output.require_group("INPUTS")
+        prob_group = inputs_group.require_group(MASS_CATEGORY_GROUP)
+        if MASS_CATEGORY_PROBABILITY_DATASET in prob_group:
+            del prob_group[MASS_CATEGORY_PROBABILITY_DATASET]
+        prob_group.create_dataset(MASS_CATEGORY_PROBABILITY_DATASET, data=proba, dtype=np.float32)
+        if "MASK" in prob_group:
+            del prob_group["MASK"]
+        prob_group.create_dataset("MASK", data=np.ones((proba.shape[0],), dtype=bool))
+
+
 def main(
     log_directory: str,
     output_file: Optional[str],
-    checkpoint: str,
+    checkpoint: Optional[str],
     test_file: Optional[str],
     event_file: Optional[str],
     batch_size: Optional[int],
     gpu: bool,
     fp16: bool,
-    add_reco_mass_to_input: bool,
-    reco_mass_key: Optional[str]
+    add_prediction_to_input_h5: bool,
+    reco_mass_key: Optional[str],
+    classify: bool,
 ):
+    # If first positional is a .ckpt path, use it as checkpoint and derive log directory
+    if log_directory.endswith(".ckpt"):
+        checkpoint = log_directory
+        log_directory = dirname(dirname(log_directory))
     model = load_model(
         log_directory,
         test_file,
@@ -188,7 +286,8 @@ def main(
         gpu,
         fp16=fp16,
         checkpoint=checkpoint,
-        create_testing_dataset=False
+        create_testing_dataset=False,
+        classify=classify,
     )
 
     prediction_file = test_file or model.options.testing_file
@@ -197,19 +296,45 @@ def main(
 
     model.testing_dataset = create_prediction_dataset(prediction_file, model.options)
 
-    if output_file is None and not add_reco_mass_to_input:
-        raise ValueError("Either output_file must be provided or --add_reco_mass_to_input must be set.")
+    if output_file is None and not add_prediction_to_input_h5:
+        raise ValueError("Either output_file must be provided or --add_prediction_to_input_h5 must be set.")
 
-    regressions = evaluate_on_test_dataset(model, fp16=fp16)
+    regressions, classifications = evaluate_on_test_dataset(model, fp16=fp16)
 
-    if output_file is not None:
-        create_hdf5_output(output_file, model.testing_dataset, regressions)
-
-    if add_reco_mass_to_input:
-        key = select_reco_mass_key(regressions, reco_mass_key)
-        add_reco_mass_to_input_file = test_file or model.testing_dataset.data_file
-        print(f"Adding reco mass '{key}' to: {add_reco_mass_to_input_file}")
-        write_reco_mass_to_input(add_reco_mass_to_input_file, regressions[key])
+    if classify:
+        if not classifications:
+            raise ValueError(
+                "Classification mode (--classify) was set but the model has no classification outputs. "
+                "Train with --classify to get a classification model."
+            )
+        if output_file is not None:
+            create_hdf5_output(
+                output_file,
+                model.testing_dataset,
+                regressions={},
+                classifications=classifications
+            )
+        if add_prediction_to_input_h5:
+            add_to_file = test_file or model.testing_dataset.data_file
+            print(f"Adding classification probability vectors to: {add_to_file}")
+            write_classification_probs_to_input(add_to_file, classifications)
+    else:
+        if not regressions:
+            raise ValueError(
+                "Regression mode was set but the model produced no regression outputs."
+            )
+        if output_file is not None:
+            create_hdf5_output(
+                output_file,
+                model.testing_dataset,
+                regressions=regressions,
+                classifications=None
+            )
+        if add_prediction_to_input_h5:
+            key = select_reco_mass_key(regressions, reco_mass_key)
+            add_to_file = test_file or model.testing_dataset.data_file
+            print(f"Adding reco mass '{key}' to: {add_to_file}")
+            write_reco_mass_to_input(add_to_file, regressions[key])
 
 
 if __name__ == '__main__':
@@ -239,11 +364,15 @@ if __name__ == '__main__':
     parser.add_argument("-fp16", "--fp16", action="store_true",
                         help="Use Automatic Mixed Precision for inference.")
 
-    parser.add_argument("--add_reco_mass_to_input", action="store_true",
-                        help="Write the regression prediction into INPUTS/RecoMass/reco_mass in the input HDF5.")
+    parser.add_argument("--add_prediction_to_input_h5", action="store_true",
+                        help="Write predictions into the input HDF5: in regression mode, reco mass to INPUTS/RecoMass/reco_mass; "
+                             "in classification mode, probability vector to INPUTS/MassCategory/probability.")
 
     parser.add_argument("--reco_mass_key", type=str, default=None,
-                        help="Regression key to use for reco mass (default: EVENT/gen_mass or only key).")
+                        help="Regression key to use for reco mass when using --add_prediction_to_input_h5 in regression mode.")
+
+    parser.add_argument("--classify", action="store_true",
+                        help="Classification mode: save class probability vectors. Omit for regression mode.")
 
     arguments = parser.parse_args()
     main(**arguments.__dict__)

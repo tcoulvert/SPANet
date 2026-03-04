@@ -211,6 +211,10 @@ class Options(Namespace):
         # Percent of data to use for training vs. validation.
         self.train_validation_split: float = 0.95
 
+        # Limit validation to this fraction of batches (0.0-1.0). Reduces validation time.
+        # 1.0 = full validation, 0.2 = 20% of validation batches. Default 1.0.
+        self.limit_val_batches: float = 1.0
+
         # Training batch size.
         self.batch_size: int = 4096
 

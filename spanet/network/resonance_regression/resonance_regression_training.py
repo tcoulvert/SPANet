@@ -28,7 +28,8 @@ class ResonanceRegressionTraining(ResonanceRegressionNetwork):
     def compute_regression_loss(
         self,
         predictions: Dict[str, Tensor],
-        targets: Dict[str, Tensor]
+        targets: Dict[str, Tensor],
+        log_metrics: bool = True
     ) -> Tensor:
         """Compute regression loss for all targets.
 
@@ -78,7 +79,8 @@ class ResonanceRegressionTraining(ResonanceRegressionNetwork):
             loss = torch.mean(loss)
 
             # Log individual regression losses
-            self.log(f"loss/regression/{key}", loss, sync_dist=True)
+            if log_metrics:
+                self.log(f"loss/regression/{key}", loss, sync_dist=True)
 
             loss_terms.append(self.options.regression_loss_scale * loss)
 
@@ -90,7 +92,8 @@ class ResonanceRegressionTraining(ResonanceRegressionNetwork):
     def compute_classification_loss(
         self,
         predictions: Dict[str, Tensor],
-        targets: Dict[str, Tensor]
+        targets: Dict[str, Tensor],
+        log_metrics: bool = True
     ) -> Tensor:
         """Compute classification loss for classification targets.
 
@@ -128,7 +131,8 @@ class ResonanceRegressionTraining(ResonanceRegressionNetwork):
             )
 
             # Log individual classification losses
-            self.log(f"loss/classification/{key}", loss, sync_dist=True)
+            if log_metrics:
+                self.log(f"loss/classification/{key}", loss, sync_dist=True)
 
             loss_terms.append(self.options.classification_loss_scale * loss)
 

@@ -25,7 +25,7 @@ class CombinedVectorEmbedding(nn.Module):
     ):
         super(CombinedVectorEmbedding, self).__init__()
 
-        self.num_input_features = training_dataset.event_info.num_features(input_name)
+        self.num_input_features = training_dataset.get_input_num_features(input_name)
 
         self.vector_embeddings = self.embedding_class(input_type)(options, self.num_input_features)
         self.position_embedding = PositionEmbedding(options.position_embedding_dim)

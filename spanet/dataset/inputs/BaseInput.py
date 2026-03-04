@@ -59,6 +59,10 @@ class BaseInput(ABC):
     def max_vectors(self) -> int:
         raise NotImplementedError()
 
+    def num_input_features(self) -> int:
+        """Number of feature dimensions for this input (used by embedding)."""
+        return len(self.input_features)
+
     @abstractmethod
     def __getitem__(self, item) -> Source:
         raise NotImplementedError()

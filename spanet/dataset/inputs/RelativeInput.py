@@ -106,6 +106,9 @@ class RelativeInput(BaseInput):
             torch.cat((masked_invariant_std, masked_covariant_std))
         )
 
+    def num_input_features(self) -> int:
+        return self.invariant_data.shape[-1] + self.covariant_data.shape[-1]
+
     def num_vectors(self) -> int:
         return self.invariant_mask.sum(1)
 

@@ -448,6 +448,10 @@ class JetReconstructionDataset(Dataset):
     def limit_dataset_to_jet_count(self, jet_count):
         self.limit_dataset_to_mask(self.num_vectors == jet_count)
 
+    def get_input_num_features(self, input_name: str) -> int:
+        """Actual feature dimension for this input (supports global vector features)."""
+        return self.sources[input_name].num_input_features()
+
     def __len__(self) -> int:
         return self.num_events
 

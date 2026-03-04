@@ -162,15 +162,27 @@ def main(
         profiler = PyTorchProfiler(emit_nvtx=True)
 
     # Create the final pytorch-lightning manager
+    # MoE and pairwise models can have parameters unused in some forward passes; DDP needs find_unused_parameters=True.
+    if options.num_gpu > 1:
+        needs_find_unused = (
+            getattr(options, "use_moe", False)
+            or getattr(options, "use_pairwise_interactions", False)
+        )
+        strategy = "ddp_find_unused_parameters_true" if needs_find_unused else "ddp_find_unused_parameters_false"
+    else:
+        strategy = "auto"
+
     trainer = pl.Trainer(
         accelerator="gpu" if options.num_gpu > 0 else "auto",
         devices=options.num_gpu if options.num_gpu > 0 else "auto",
-        strategy="ddp_find_unused_parameters_false" if options.num_gpu > 1 else "auto",
+        strategy=strategy,
         precision="16-mixed" if fp16 else "32-true",
 
         gradient_clip_val=options.gradient_clip if options.gradient_clip > 0 else None,
         max_epochs=epochs,
         max_time=time_limit,
+
+        limit_val_batches=options.limit_val_batches,
 
         logger=logger,
         profiler=profiler,

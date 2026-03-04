@@ -127,7 +127,7 @@ def main(
     if classify:
         checkpoint_monitor = "validation_accuracy"
         checkpoint_mode = "max"
-        checkpoint_filename = "epoch_{epoch}_val_acc_{validation_accuracy:.4f}"
+        checkpoint_filename = "epoch_{epoch}_val_acc_{validation_accuracy:.4f}_top_3_{validation_top3_accuracy:.4f}"
     else:
         checkpoint_monitor = "validation_mae"
         checkpoint_mode = "min"
@@ -164,6 +164,7 @@ def main(
         precision="16-mixed" if fp16 else "32-true",
         gradient_clip_val=options.gradient_clip if options.gradient_clip > 0 else None,
         max_epochs=options.epochs,
+        limit_val_batches=options.limit_val_batches,
         logger=logger,
         callbacks=callbacks
     )
