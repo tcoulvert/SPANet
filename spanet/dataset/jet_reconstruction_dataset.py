@@ -384,7 +384,6 @@ class JetReconstructionDataset(Dataset):
         for target, weight in target_weights.items():
             weight_factor = 1.
             for elem in target: weight_factor *= recotype_weights[elem]
-            print(target, ', ', weight_factor)
 
             index = index_tensor[list(target)].sum()
             target_weights_tensor[index] = len(eq_class_weights) * weight * weight_factor / norm
