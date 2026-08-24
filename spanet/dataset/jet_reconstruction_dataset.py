@@ -341,7 +341,7 @@ class JetReconstructionDataset(Dataset):
             if value is not None
         ))
 
-    def compute_particle_balance(self):
+    def compute_particle_balance(self, recotype_weights):
         # Extract just the mask information from the dataset.
         masks = torch.stack([target[1] for target in self.assignments.values()])
 
@@ -377,9 +377,17 @@ class JetReconstructionDataset(Dataset):
         index_tensor = 2 ** np.arange(num_targets)
         target_weights_tensor = torch.zeros(2 ** num_targets)
 
+        if recotype_weights is None:
+            recotype_weights = {idx: 1 for idx, name in enumerate(self.event_info.event_particles.names)}
+        else:
+            recotype_weights = {idx: recotype_weights[name] for idx, name in enumerate(self.event_info.event_particles.names)}
         for target, weight in target_weights.items():
+            weight_factor = 1.
+            for elem in target: weight_factor *= recotype_weights[elem]
+            print(target, ', ', weight_factor)
+
             index = index_tensor[list(target)].sum()
-            target_weights_tensor[index] = len(eq_class_weights) * weight / norm
+            target_weights_tensor[index] = len(eq_class_weights) * weight * weight_factor / norm
 
         return torch.from_numpy(index_tensor), target_weights_tensor
 

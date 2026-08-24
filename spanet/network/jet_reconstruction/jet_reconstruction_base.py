@@ -24,7 +24,7 @@ class JetReconstructionBase(pl.LightningModule):
         # Compute class weights for particles from the training dataset target distribution
         self.balance_particles = False
         if options.balance_particles and options.partial_events:
-            index_tensor, weights_tensor = self.training_dataset.compute_particle_balance()
+            index_tensor, weights_tensor = self.training_dataset.compute_particle_balance(options.balance_particles_weighted)
             self.particle_index_tensor = torch.nn.Parameter(index_tensor, requires_grad=False)
             self.particle_weights_tensor = torch.nn.Parameter(weights_tensor, requires_grad=False)
             self.balance_particles = True

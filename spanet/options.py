@@ -174,6 +174,7 @@ class Options(Namespace):
 
         # Whether or not to add weight to classes based on their training data prevalence.
         self.balance_particles: bool = False
+        self.balance_particles_weighted: None|dict = None
 
         # Whether or not to add a weight to the jet multiplicity to not forget about large events.
         self.balance_jets: bool = False
