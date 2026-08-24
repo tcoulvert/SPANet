@@ -66,11 +66,16 @@ class JetReconstructionBase(pl.LightningModule):
 
     @property
     def dataloader_options(self):
-        return {
+        num_workers = self.options.num_dataloader_workers
+        opts = {
             "batch_size": self.options.batch_size,
             "pin_memory": self.options.num_gpu > 0,
-            "num_workers": self.options.num_dataloader_workers,
+            "num_workers": num_workers,
         }
+        # Keep workers alive across epochs to avoid restart overhead in multi-GPU (DDP)
+        if self.options.num_gpu > 1 and num_workers > 0:
+            opts["persistent_workers"] = True
+        return opts
 
     @property
     def event_info(self):

@@ -105,6 +105,10 @@ class JetReconstructionValidation(JetReconstructionNetwork):
         return metrics
 
     def validation_step(self, batch, batch_idx) -> Dict[str, np.float32]:
+        # Compute validation loss (same as training loss) for overfitting monitoring
+        val_loss = self.compute_validation_loss(batch)
+        self.log("loss/val_total_loss", val_loss, sync_dist=True, on_epoch=True)
+
         # Run the base prediction step
         sources, num_jets, targets, regression_targets, classification_targets = batch
         jet_predictions, particle_scores, regressions, classifications = self.predict(sources)

@@ -1,3 +1,7 @@
+"""Jet reconstruction network with Particle Transformer-style pairwise interactions.
+
+Extends JetReconstructionNetwork to use pairwise attention bias in the central encoder.
+"""
 import numpy as np
 import torch
 from torch import nn
@@ -5,26 +9,19 @@ from torch import nn
 from spanet.options import Options
 from spanet.dataset.types import Tuple, Outputs, Source, Predictions
 
-from spanet.network.layers.vector_encoder import JetEncoder
 from spanet.network.layers.branch_decoder import BranchDecoder
-from spanet.network.layers.embedding import MultiInputVectorEmbedding
 from spanet.network.layers.regression_decoder import RegressionDecoder
 from spanet.network.layers.classification_decoder import ClassificationDecoder
 
 from spanet.network.prediction_selection import extract_predictions
 from spanet.network.jet_reconstruction.jet_reconstruction_base import JetReconstructionBase
 
-# Conditionally import pairwise components
-try:
-    from spanet.network.jet_reconstruction_pairwise.pairwise_embedding import (
-        MultiInputVectorEmbeddingWithPairwise
-    )
-    from spanet.network.jet_reconstruction_pairwise.pairwise_encoder import (
-        JetEncoderWithPairwise
-    )
-    PAIRWISE_AVAILABLE = True
-except ImportError:
-    PAIRWISE_AVAILABLE = False
+from spanet.network.jet_reconstruction_pairwise.pairwise_embedding import (
+    MultiInputVectorEmbeddingWithPairwise
+)
+from spanet.network.jet_reconstruction_pairwise.pairwise_encoder import (
+    JetEncoderWithPairwise
+)
 
 TArray = np.ndarray
 
@@ -36,51 +33,41 @@ def default_assignment_fn(outputs: Outputs):
     ])
 
 
-class JetReconstructionNetwork(JetReconstructionBase):
-    def __init__(self, options: Options, torch_script: bool = False):
-        """ Base class defining the SPANet architecture.
+class JetReconstructionNetworkWithPairwise(JetReconstructionBase):
+    """SPANet architecture with Particle Transformer-style pairwise attention.
 
-        Parameters
-        ----------
-        options: Options
-            Global options for the entire network.
-            See network.options.Options
-        """
-        super(JetReconstructionNetwork, self).__init__(options)
+    Extends JetReconstructionNetwork to:
+    1. Use MultiInputVectorEmbeddingWithPairwise for embedding
+    2. Use JetEncoderWithPairwise for central encoder
+    3. Pass pairwise attention bias from embedding to encoder
+
+    Parameters
+    ----------
+    options : Options
+        Global options for the network
+    torch_script : bool
+        Whether to compile modules with TorchScript
+    """
+
+    def __init__(self, options: Options, torch_script: bool = False):
+        super().__init__(options)
 
         compile_module = torch.jit.script if torch_script else lambda x: x
 
         self.hidden_dim = options.hidden_dim
 
-        # Check if pairwise interactions should be enabled
-        self.use_pairwise = getattr(options, 'use_pairwise_interactions', False)
-        
-        if self.use_pairwise:
-            if not PAIRWISE_AVAILABLE:
-                raise ImportError(
-                    "Pairwise interactions requested but pairwise modules not available. "
-                    "Ensure spanet.network.jet_reconstruction_pairwise is installed."
-                )
-            # Use pairwise-aware embedding
-            self.embedding = compile_module(MultiInputVectorEmbeddingWithPairwise(
-                options,
-                self.training_dataset
-            ))
-            # Use pairwise-aware encoder
-            self.encoder = compile_module(JetEncoderWithPairwise(
-                options,
-            ))
-        else:
-            # Use standard embedding
-            self.embedding = compile_module(MultiInputVectorEmbedding(
-                options,
-                self.training_dataset
-            ))
-            # Use standard encoder
-            self.encoder = compile_module(JetEncoder(
-                options,
-            ))
+        # Use pairwise-aware embedding
+        self.embedding = compile_module(MultiInputVectorEmbeddingWithPairwise(
+            options,
+            self.training_dataset
+        ))
 
+        # Use pairwise-aware encoder
+        self.encoder = compile_module(JetEncoderWithPairwise(
+            options,
+        ))
+
+        # Branch decoders (same as original - no pairwise in branch decoders)
         self.branch_decoders = nn.ModuleList([
             BranchDecoder(
                 options,
@@ -103,33 +90,32 @@ class JetReconstructionNetwork(JetReconstructionBase):
             self.training_dataset
         ))
 
-        # An example input for generating the network's graph, batch size of 2
-        # self.example_input_array = tuple(x.contiguous() for x in self.training_dataset[:2][0])
-
     @property
     def enable_softmax(self):
         return True
 
     def forward(self, sources: Tuple[Source, ...]) -> Outputs:
-        # Embed all of the different input regression_vectors into the same latent space.
-        if self.use_pairwise:
-            # Pairwise embedding returns 5 values: embeddings, padding_masks, sequence_masks, global_masks, pairwise_bias
-            embeddings, padding_masks, sequence_masks, global_masks, pairwise_bias = self.embedding(sources)
-            # Extract features from data using transformer with pairwise attention bias
-            hidden, event_vector, gate_logits_list = self.encoder(embeddings, padding_masks, sequence_masks, pairwise_bias)
-        else:
-            # Standard embedding returns 4 values: embeddings, padding_masks, sequence_masks, global_masks
-            embeddings, padding_masks, sequence_masks, global_masks = self.embedding(sources)
-            # Extract features from data using transformer
-            hidden, event_vector, gate_logits_list = self.encoder(embeddings, padding_masks, sequence_masks)
-        
-        # Store gate_logits for MoE loss computation (only if MoE is enabled)
-        if getattr(self.options, 'use_moe', False):
-            self._gate_logits_list = gate_logits_list
-        else:
-            self._gate_logits_list = None
+        """Forward pass with pairwise attention.
 
-        # Create output lists for each particle in event.
+        Parameters
+        ----------
+        sources : Tuple[Source, ...]
+            Input sources (data, mask) for each input type
+
+        Returns
+        -------
+        Outputs
+            Model outputs including assignments, detections, regressions, classifications
+        """
+        # Embed inputs and compute pairwise features
+        embeddings, padding_masks, sequence_masks, global_masks, pairwise_bias = self.embedding(sources)
+
+        # Extract features using transformer with pairwise attention
+        hidden, event_vector = self.encoder(
+            embeddings, padding_masks, sequence_masks, pairwise_bias
+        )
+
+        # Create output lists for each particle in event
         assignments = []
         detections = []
 
@@ -150,15 +136,15 @@ class JetReconstructionNetwork(JetReconstructionBase):
             assignments.append(assignment)
             detections.append(detection)
 
-            # Assign the summarising vectors to their correct structure.
+            # Assign the summarising vectors to their correct structure
             encoded_vectors["/".join([decoder.particle_name, "PARTICLE"])] = event_particle_vector
             for product_name, product_vector in zip(decoder.product_names, product_particle_vectors):
                 encoded_vectors["/".join([decoder.particle_name, product_name])] = product_vector
 
-        # Predict the valid regressions for any real values associated with the event.
+        # Predict regressions for any real values associated with the event
         regressions = self.regression_decoder(encoded_vectors)
 
-        # Predict additional classification targets for any branch of the event.
+        # Predict additional classification targets
         classifications = self.classification_decoder(encoded_vectors)
 
         return Outputs(
@@ -173,16 +159,13 @@ class JetReconstructionNetwork(JetReconstructionBase):
         with torch.no_grad():
             outputs = self.forward(sources)
 
-            # Extract assignment probabilities and find the least conflicting assignment.
             assignments = assignment_fn(outputs)
 
-            # Convert detection logits into probabilities and move to CPU.
             detections = np.stack([
                 torch.sigmoid(detection).cpu().numpy()
                 for detection in outputs.detections
             ])
 
-            # Move regressions to CPU and away from torch.
             regressions = {
                 key: value.cpu().numpy()
                 for key, value in outputs.regressions.items()
@@ -201,20 +184,17 @@ class JetReconstructionNetwork(JetReconstructionBase):
         )
 
     def predict_assignments(self, sources: Tuple[Source, ...]) -> np.ndarray:
-        # Run the base prediction step
         with torch.no_grad():
             assignments = [
                 np.nan_to_num(assignment.detach().cpu().numpy(), -np.inf)
                 for assignment in self.forward(sources).assignments
             ]
 
-        # Find the optimal selection of jets from the output distributions.
         return extract_predictions(assignments)
 
     def predict_assignments_and_detections(self, sources: Tuple[Source, ...]) -> Tuple[TArray, TArray]:
         assignments, detections, regressions, classifications = self.predict(sources)
 
-        # Always predict the particle exists if we didn't train on it
         if self.options.detection_loss_scale == 0:
             detections += 1
 

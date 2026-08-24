@@ -152,8 +152,35 @@ class Options(Namespace):
         self.pairwise_embedding_dim: int = 8
 
         # Which SEQUENTIAL input source to use for pairwise features.
-        # Empty string means auto-detect the first SEQUENTIAL input.
+        # Empty string (default) uses ALL sequential inputs, each collection
+        # embedded by its own MLP. A specific input name restricts pairwise
+        # features to that single collection (legacy single-block behaviour).
         self.pairwise_input_source: str = ""
+
+        # Enable an independent MLP for cross-type pairwise features between two
+        # different jet collections (e.g. Jets <-> BoostedJets). Cross-type
+        # blocks are only built when a resonance in the event file is made of
+        # more than one kind of jet (a cross-type resonance). Set False to keep
+        # only the per-collection same-type blocks.
+        self.pairwise_cross_type: bool = True
+
+        # =========================================================================================
+        # Mixture of Experts (MoE) Options
+        # =========================================================================================
+
+        # Enable Mixture of Experts layers in transformer feedforward networks.
+        # When True, replaces standard feedforward layers with MoE layers.
+        self.use_moe: bool = False
+
+        # Total number of expert networks in each MoE layer.
+        self.num_experts: int = 8
+
+        # Number of experts to use per token (top-k selection).
+        self.num_experts_per_tok: int = 2
+
+        # Scale factor for MoE auxiliary loss (load balancing loss).
+        # Set to 0.0 to disable MoE loss.
+        self.moe_loss_scale: float = 0.01
 
         # =========================================================================================
         # Dataset Options
@@ -193,6 +220,10 @@ class Options(Namespace):
 
         # Percent of data to use for training vs. validation.
         self.train_validation_split: float = 0.95
+
+        # Limit validation to this fraction of batches (0.0-1.0). Reduces validation time.
+        # 1.0 = full validation, 0.2 = 20% of validation batches. Default 1.0.
+        self.limit_val_batches: float = 1.0
 
         # Training batch size.
         self.batch_size: int = 4096

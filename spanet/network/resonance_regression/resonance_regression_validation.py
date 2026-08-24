@@ -40,6 +40,18 @@ class ResonanceRegressionValidation(ResonanceRegressionNetwork):
         """
         sources, num_jets, assignment_targets, regression_targets, classification_targets = batch
 
+        # Compute validation loss (same as training) for overfitting monitoring
+        with torch.no_grad():
+            outputs = self.forward(batch.sources)
+            val_loss = self.compute_regression_loss(
+                outputs.regressions, batch.regression_targets, log_metrics=False
+            )
+            if outputs.classifications is not None and self.options.classification_loss_scale > 0:
+                val_loss = val_loss + self.compute_classification_loss(
+                    outputs.classifications, batch.classification_targets, log_metrics=False
+                )
+        self.log("loss/val_total_loss", val_loss, sync_dist=True, on_epoch=True)
+
         # Get predictions
         predictions = self.predict(sources)
 
@@ -121,6 +133,7 @@ class ResonanceRegressionValidation(ResonanceRegressionNetwork):
         # Check for classification predictions (they have _pred_class suffix)
         for cls_key in classification_targets_np:
             pred_class_key = f"{cls_key}_pred_class"
+            logits_key = f"{cls_key}_logits"
             if pred_class_key not in predictions:
                 continue
 
@@ -146,6 +159,16 @@ class ResonanceRegressionValidation(ResonanceRegressionNetwork):
             self.log(f"CLASSIFICATION/{cls_key}_accuracy", accuracy, sync_dist=True)
             metrics[f"{cls_key}_accuracy"] = accuracy
 
+            # Top-3 accuracy: fraction of samples where the true class is among the top-3 predicted
+            if logits_key in predictions:
+                logits = predictions[logits_key]  # [B, num_classes]
+                logits_valid = logits[valid_mask]
+                top3_indices = np.argsort(-logits_valid, axis=-1)[:, :3]  # [N, 3]
+                target_in_top3 = (target_class_valid[:, None] == top3_indices).any(axis=1)
+                top3_accuracy = target_in_top3.mean()
+                self.log(f"CLASSIFICATION/{cls_key}_top3_accuracy", top3_accuracy, sync_dist=True)
+                metrics[f"{cls_key}_top3_accuracy"] = top3_accuracy
+
             # Per-class accuracy (for debugging)
             unique_classes = np.unique(target_class_valid)
             for cls_idx in unique_classes:
@@ -170,6 +193,8 @@ class ResonanceRegressionValidation(ResonanceRegressionNetwork):
                 first_cls_key = list(classification_targets_np.keys())[0]
                 if f"{first_cls_key}_accuracy" in metrics:
                     self.log("validation_accuracy", metrics[f"{first_cls_key}_accuracy"], sync_dist=True)
+                if f"{first_cls_key}_top3_accuracy" in metrics:
+                    self.log("validation_top3_accuracy", metrics[f"{first_cls_key}_top3_accuracy"], sync_dist=True)
 
         return metrics
 

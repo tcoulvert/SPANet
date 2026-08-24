@@ -101,7 +101,7 @@ class SymmetricAttentionSplit(SymmetricAttentionBase):
             # First pass the input through this jet's encoder stack.
             # y: [T, B, D]
             # ------------------------------------------------------
-            y, daughter_vector = encoder(x, padding_mask, sequence_mask)
+            y, daughter_vector, _ = encoder(x, padding_mask, sequence_mask)
 
             # --------------------------------------------------------
             # Flatten and apply the final linear layer to each vector.

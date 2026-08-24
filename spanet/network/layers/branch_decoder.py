@@ -125,7 +125,7 @@ class BranchDecoder(nn.Module):
         # Apply the branch's independent encoder to each vector.
         # particle_vectors : [T, B, D]
         # ------------------------------------------------------
-        encoded_vectors, particle_vector = self.encoder(event_vectors, padding_mask, sequence_mask)
+        encoded_vectors, particle_vector, _ = self.encoder(event_vectors, padding_mask, sequence_mask)
 
         # -----------------------------------------------
         # Run the encoded vectors through the classifier.

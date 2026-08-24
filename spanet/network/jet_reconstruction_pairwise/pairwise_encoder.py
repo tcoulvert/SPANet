@@ -33,7 +33,7 @@ class StackedEncoderWithPairwise(nn.Module):
         padding_mask: Tensor,
         sequence_mask: Tensor,
         pairwise_bias: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Optional[list]]:
         num_vectors, batch_size, hidden_dim = encoded_vectors.shape
 
         encoded_vectors = self.embedding(encoded_vectors, sequence_mask)
@@ -53,14 +53,14 @@ class StackedEncoderWithPairwise(nn.Module):
             combined_pairwise_bias = pairwise_bias.new_zeros(batch_heads, t + 1, t + 1)
             combined_pairwise_bias[:, 1:, 1:] = pairwise_bias
 
-        combined_vectors = self.encoder(
+        combined_vectors, gate_logits_list = self.encoder(
             combined_vectors,
             combined_padding_mask,
             combined_sequence_mask,
             combined_pairwise_bias,
         )
         particle_vector, encoded_vectors = combined_vectors[0], combined_vectors[1:]
-        return encoded_vectors, particle_vector
+        return encoded_vectors, particle_vector, gate_logits_list
 
 
 class JetEncoderWithPairwise(StackedEncoderWithPairwise):

@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -10,6 +10,7 @@ from spanet.dataset.types import Batch, Source, AssignmentTargets
 from spanet.dataset.regressions import regression_loss
 from spanet.network.jet_reconstruction.jet_reconstruction_network import JetReconstructionNetwork
 from spanet.network.utilities.divergence_losses import assignment_cross_entropy_loss, jensen_shannon_divergence
+from spanet.network.layers.moe import compute_moe_loss
 
 
 def numpy_tensor_array(tensor_list):
@@ -124,7 +125,8 @@ class JetReconstructionTraining(JetReconstructionNetwork):
             total_loss: List[Tensor],
             assignments: List[Tensor],
             masks: Tensor,
-            weights: Tensor
+            weights: Tensor,
+            log_metrics: bool = True
     ) -> List[Tensor]:
         if len(self.event_info.event_transpositions) == 0:
             return total_loss
@@ -134,7 +136,8 @@ class JetReconstructionTraining(JetReconstructionNetwork):
         kl_loss = (weights * kl_loss).sum() / masks.sum()
 
         with torch.no_grad():
-            self.log("loss/symmetric_loss", kl_loss, sync_dist=True)
+            if log_metrics:
+                self.log("loss/symmetric_loss", kl_loss, sync_dist=True)
             if torch.isnan(kl_loss):
                 raise ValueError("Symmetric KL Loss has diverged.")
 
@@ -144,7 +147,8 @@ class JetReconstructionTraining(JetReconstructionNetwork):
             self,
             total_loss: List[Tensor],
             predictions: Dict[str, Tensor],
-            targets:  Dict[str, Tensor]
+            targets:  Dict[str, Tensor],
+            log_metrics: bool = True
     ) -> List[Tensor]:
         regression_terms = []
 
@@ -167,7 +171,8 @@ class JetReconstructionTraining(JetReconstructionNetwork):
             current_loss = torch.mean(current_loss)
 
             with torch.no_grad():
-                self.log(f"loss/regression/{key}", current_loss, sync_dist=True)
+                if log_metrics:
+                    self.log(f"loss/regression/{key}", current_loss, sync_dist=True)
 
             regression_terms.append(self.options.regression_loss_scale * current_loss)
 
@@ -177,7 +182,8 @@ class JetReconstructionTraining(JetReconstructionNetwork):
             self,
             total_loss: List[Tensor],
             predictions: Dict[str, Tensor],
-            targets: Dict[str, Tensor]
+            targets: Dict[str, Tensor],
+            log_metrics: bool = True
     ) -> List[Tensor]:
         classification_terms = []
 
@@ -196,7 +202,8 @@ class JetReconstructionTraining(JetReconstructionNetwork):
             classification_terms.append(self.options.classification_loss_scale * current_loss)
 
             with torch.no_grad():
-                self.log(f"loss/classification/{key}", current_loss, sync_dist=True)
+                if log_metrics:
+                    self.log(f"loss/classification/{key}", current_loss, sync_dist=True)
 
         return total_loss + classification_terms
 
@@ -281,6 +288,14 @@ class JetReconstructionTraining(JetReconstructionNetwork):
             total_loss = self.add_classification_loss(total_loss, outputs.classifications, batch.classification_targets)
 
         # ===================================================================================================
+        # MoE auxiliary loss for load balancing
+        # ---------------------------------------------------------------------------------------------------
+        if getattr(self.options, 'use_moe', False) and getattr(self.options, 'moe_loss_scale', 0.0) > 0:
+            moe_loss = self.add_moe_loss(total_loss)
+            if moe_loss is not None:
+                total_loss = moe_loss
+
+        # ===================================================================================================
         # Combine and return the loss
         # ---------------------------------------------------------------------------------------------------
         total_loss = torch.cat([loss.view(-1) for loss in total_loss])
@@ -288,3 +303,97 @@ class JetReconstructionTraining(JetReconstructionNetwork):
         self.log("loss/total_loss", total_loss.sum(), sync_dist=True)
 
         return total_loss.mean()
+    
+    def add_moe_loss(self, total_loss: List[Tensor], log_metrics: bool = True) -> Optional[List[Tensor]]:
+        """Add MoE auxiliary loss for load balancing.
+        
+        Parameters
+        ----------
+        total_loss: List[Tensor]
+            Current list of loss terms
+        log_metrics: bool
+            Whether to log the MoE loss to TensorBoard
+            
+        Returns
+        -------
+        List[Tensor]
+            Updated list of loss terms with MoE loss added
+        """
+        if not hasattr(self, '_gate_logits_list') or self._gate_logits_list is None:
+            return total_loss
+        
+        # Collect all gate logits from all transformer layers
+        all_gate_logits = []
+        for gate_logits in self._gate_logits_list:
+            if gate_logits is not None:
+                all_gate_logits.append(gate_logits)
+        
+        if len(all_gate_logits) == 0:
+            return total_loss
+        
+        # Compute MoE loss for each layer and average
+        moe_losses = []
+        num_experts = getattr(self.options, 'num_experts', 8)
+        for gate_logits in all_gate_logits:
+            moe_losses.append(compute_moe_loss(gate_logits, num_experts))
+        
+        # Average MoE loss across all layers
+        moe_loss = torch.stack(moe_losses).mean()
+        
+        with torch.no_grad():
+            if log_metrics:
+                self.log("loss/moe_loss", moe_loss, sync_dist=True)
+        
+        return total_loss + [self.options.moe_loss_scale * moe_loss]
+
+    def compute_validation_loss(self, batch: Batch) -> Tensor:
+        """Compute validation loss (same as training) without gradient or per-component logging.
+
+        Used for monitoring overfitting. Runs in no_grad context - call from validation_step.
+        """
+        with torch.no_grad():
+            outputs = self.forward(batch.sources)
+
+            symmetric_losses, best_indices = self.symmetric_losses(
+                outputs.assignments,
+                outputs.detections,
+                batch.assignment_targets,
+            )
+
+            permutations = self.event_permutation_tensor[best_indices].T
+            masks = torch.stack([target.mask for target in batch.assignment_targets])
+            masks = torch.gather(masks, 0, permutations)
+
+            weights = torch.ones_like(symmetric_losses)
+            if self.balance_particles:
+                class_indices = (masks * self.particle_index_tensor.unsqueeze(1)).sum(0)
+                weights *= self.particle_weights_tensor[class_indices]
+            if self.balance_jets:
+                weights *= self.jet_weights_tensor[batch.num_vectors]
+
+            masks = masks.unsqueeze(1)
+            symmetric_losses = (weights * symmetric_losses).sum(-1) / torch.clamp(masks.sum(-1), 1, None)
+            assignment_loss, detection_loss = torch.unbind(symmetric_losses, 1)
+
+            total_loss = []
+            if self.options.assignment_loss_scale > 0:
+                total_loss.append(assignment_loss)
+            if self.options.detection_loss_scale > 0:
+                total_loss.append(detection_loss)
+
+            if self.options.kl_loss_scale > 0:
+                total_loss = self.add_kl_loss(total_loss, outputs.assignments, masks, weights, log_metrics=False)
+
+            if self.options.regression_loss_scale > 0:
+                total_loss = self.add_regression_loss(total_loss, outputs.regressions, batch.regression_targets, log_metrics=False)
+
+            if self.options.classification_loss_scale > 0:
+                total_loss = self.add_classification_loss(total_loss, outputs.classifications, batch.classification_targets, log_metrics=False)
+
+            if getattr(self.options, 'use_moe', False) and getattr(self.options, 'moe_loss_scale', 0.0) > 0:
+                moe_loss = self.add_moe_loss(total_loss, log_metrics=False)
+                if moe_loss is not None:
+                    total_loss = moe_loss
+
+            total_loss = torch.cat([loss.view(-1) for loss in total_loss])
+            return total_loss.sum()

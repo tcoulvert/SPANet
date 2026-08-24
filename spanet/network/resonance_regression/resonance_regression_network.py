@@ -88,7 +88,7 @@ class ResonanceRegressionNetwork(ResonanceRegressionBase):
         # Extract features using transformer encoder
         # hidden: [T, B, D] - per-jet representations
         # event_vector: [B, D] - global event representation
-        hidden, event_vector = self.encoder(embeddings, padding_masks, sequence_masks)
+        hidden, event_vector, _ = self.encoder(embeddings, padding_masks, sequence_masks)
 
         # Build vector dictionary for regression decoder
         # The regression decoder uses keys like "EVENT/gen_mass" and looks up "EVENT" vector

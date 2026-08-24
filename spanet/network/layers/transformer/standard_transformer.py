@@ -1,3 +1,4 @@
+from typing import Optional, Tuple
 from torch import Tensor, nn
 
 from spanet.options import Options
@@ -21,6 +22,6 @@ class StandardTransformer(TransformerBase):
             num_layers
         )
 
-    def forward(self, x: Tensor, padding_mask: Tensor, sequence_mask: Tensor) -> Tensor:
+    def forward(self, x: Tensor, padding_mask: Tensor, sequence_mask: Tensor) -> Tuple[Tensor, Optional[list]]:
         output = self.transformer(x, src_key_padding_mask=padding_mask)
-        return self.masking(output, sequence_mask)
+        return self.masking(output, sequence_mask), None
