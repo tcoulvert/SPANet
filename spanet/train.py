@@ -113,7 +113,6 @@ def main(
     # Create the initial model on the CPU
     # Uses factory function to select pairwise model if use_pairwise_interactions=True
     model = create_model(options, torch_script)
-    return
 
     if state_dict is not None:
         if master:
