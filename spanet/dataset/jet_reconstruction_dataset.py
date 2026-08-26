@@ -341,7 +341,8 @@ class JetReconstructionDataset(Dataset):
             if value is not None
         ))
 
-    def compute_particle_balance(self, recotype_weights):
+    def compute_particle_balance(self, balance_by_prevalence: bool, recotype_weights: None|dict):
+        assert balance_by_prevalence or recotype_weights is not None, f"At least one of \'balance_by_prevalence\' or \'recotype_weights\' must be selected for balancing"
         # Extract just the mask information from the dataset.
         masks = torch.stack([target[1] for target in self.assignments.values()])
 
@@ -377,16 +378,18 @@ class JetReconstructionDataset(Dataset):
         index_tensor = 2 ** np.arange(num_targets)
         target_weights_tensor = torch.zeros(2 ** num_targets)
 
-        if recotype_weights is None:
-            recotype_weights = {idx: 1 for idx, name in enumerate(self.event_info.event_particles.names)}
-        else:
-            recotype_weights = {idx: recotype_weights[name] for idx, name in enumerate(self.event_info.event_particles.names)}
         for target, weight in target_weights.items():
-            weight_factor = 1.
-            for elem in target: weight_factor *= recotype_weights[elem]
-
             index = index_tensor[list(target)].sum()
-            target_weights_tensor[index] = len(eq_class_weights) * weight * weight_factor / norm
+
+            if recotype_weights is None:
+                target_weights_tensor[index] = len(eq_class_weights) * weight / norm
+            else:
+                weight_factor = 1.
+                for elem in target: weight_factor *= recotype_weights[self.event_info.event_particles.names[elem]]
+                if balance_by_prevalence:
+                    target_weights_tensor[index] = len(eq_class_weights) * weight * weight_factor / norm
+                else:
+                    target_weights_tensor[index] = weight_factor
 
         return torch.from_numpy(index_tensor), target_weights_tensor
 
