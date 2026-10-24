@@ -251,6 +251,11 @@ class Options(Namespace):
         # 1.0 = full validation, 0.2 = 20% of validation batches. Default 1.0.
         self.limit_val_batches: float = 1.0
 
+        # Purity target for the efficiency-at-fixed-purity validation metric
+        # (validation_eff_at_purity). 0 disables the metric and the extra
+        # best-efficiency checkpoint it drives.
+        self.checkpoint_eff_at_purity: float = 0.0
+
         # Training batch size.
         self.batch_size: int = 4096
 

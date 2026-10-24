@@ -9,6 +9,7 @@ from sklearn import metrics as sk_metrics
 
 from spanet.options import Options
 from spanet.dataset.evaluator import SymmetricEvaluator
+from spanet.dataset.eff_at_purity import candidate_table, summarize, topology_name
 from spanet.network.jet_reconstruction.jet_reconstruction_network import JetReconstructionNetwork
 
 
@@ -20,6 +21,59 @@ class JetReconstructionValidation(JetReconstructionNetwork):
             self.particle_index_tensor_np = self.particle_index_tensor.cpu().detach().numpy()
             self.particle_weights_tensor_np = self.particle_weights_tensor.cpu().detach().numpy()
         # self.validation_step_metrics_outputs = []
+
+        self.eff_at_purity_target = options.checkpoint_eff_at_purity
+        if self.eff_at_purity_target > 0:
+            self.slot_topologies = [topology_name(name) for name in self.event_info.event_particles.names]
+            self.reset_eff_at_purity_buffers()
+
+    def reset_eff_at_purity_buffers(self):
+        self.eff_scores, self.eff_correct, self.eff_slot = [], [], []
+        self.eff_num_truth = np.zeros(len(self.slot_topologies), dtype=np.int64)
+
+    def accumulate_eff_at_purity(self, jet_predictions, particle_scores, stacked_targets, stacked_masks):
+        correct, candidate = candidate_table(
+            jet_predictions, particle_scores, stacked_targets, stacked_masks,
+            self.event_permutation_tensor.cpu().numpy(),
+        )
+        slot = np.broadcast_to(np.arange(candidate.shape[0])[:, np.newaxis], candidate.shape)
+
+        self.eff_scores.append(particle_scores[candidate])
+        self.eff_correct.append(correct[candidate])
+        self.eff_slot.append(slot[candidate])
+        self.eff_num_truth += stacked_masks.sum(1)
+
+    def log_eff_at_purity(self):
+        if self.eff_at_purity_target <= 0:
+            return
+
+        scores = np.concatenate(self.eff_scores) if self.eff_scores else np.zeros(0)
+        correct = np.concatenate(self.eff_correct) if self.eff_correct else np.zeros(0, dtype=bool)
+        slot = np.concatenate(self.eff_slot) if self.eff_slot else np.zeros(0, dtype=np.int64)
+        num_truth = self.eff_num_truth
+        self.reset_eff_at_purity_buffers()
+
+        if self.trainer.world_size > 1:
+            parts = [None] * self.trainer.world_size
+            torch.distributed.all_gather_object(parts, (scores, correct, slot, num_truth))
+            scores = np.concatenate([part[0] for part in parts])
+            correct = np.concatenate([part[1] for part in parts])
+            slot = np.concatenate([part[2] for part in parts])
+            num_truth = sum(part[3] for part in parts)
+
+        metrics = summarize(scores, correct, slot, num_truth, self.slot_topologies, self.eff_at_purity_target)
+
+        # The monitored key is logged even when NaN: ModelCheckpoint needs it
+        # every epoch and treats NaN as the worst value.
+        for name, value in metrics.items():
+            if name == "validation_eff_at_purity" or not np.isnan(value):
+                self.log(name, float(value), sync_dist=True)
+
+    def on_validation_epoch_end(self):
+        self.log_eff_at_purity()
+
+    def on_test_epoch_end(self):
+        self.log_eff_at_purity()
 
     @property
     def particle_metrics(self) -> Dict[str, Callable[[np.ndarray, np.ndarray], float]]:
@@ -156,6 +210,9 @@ class JetReconstructionValidation(JetReconstructionNetwork):
                     target[:, indices] = np.sort(target[:, indices])
 
         metrics.update(self.compute_metrics(jet_predictions, particle_scores, stacked_targets, stacked_masks, stacked_weights))
+
+        if self.eff_at_purity_target > 0:
+            self.accumulate_eff_at_purity(jet_predictions, particle_scores, stacked_targets, stacked_masks)
 
         for key in regressions:
             delta = regressions[key] - regression_targets[key]

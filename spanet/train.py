@@ -155,6 +155,15 @@ def main(
         RichModelSummary(max_depth=1) if _RICH_AVAILABLE else ModelSummary(max_depth=1)
     ]
 
+    if options.checkpoint_eff_at_purity > 0:
+        callbacks.append(ModelCheckpoint(
+            verbose=options.verbose_output,
+            filename='{epoch}-{step}-{validation_eff_at_purity:.3f}',
+            monitor='validation_eff_at_purity',
+            save_top_k=1,
+            mode='max'
+        ))
+
     epochs = options.epochs
     profiler = None
     if profile:
