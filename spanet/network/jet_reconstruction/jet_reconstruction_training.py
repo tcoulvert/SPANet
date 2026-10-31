@@ -245,8 +245,11 @@ class JetReconstructionTraining(JetReconstructionNetwork):
 
         # Take the weighted average of the symmetric loss terms.
         masks = masks.unsqueeze(1)
-        symmetric_losses = (weights * symmetric_losses).sum(-1) / torch.clamp(masks.sum(-1), 1, None)
-        assignment_loss, detection_loss = torch.unbind(symmetric_losses, 1)
+        weighted_losses = weights * symmetric_losses
+        # Assignment NLL: average over events where the particle exists.
+        assignment_loss = weighted_losses[:, 0].sum(-1) / torch.clamp(masks[:, 0].sum(-1), 1, None)
+        # Detection BCE is defined for every event (positives and negatives): average over the batch.
+        detection_loss = weighted_losses[:, 1].mean(-1)
 
         # ===================================================================================================
         # Some basic logging
@@ -372,8 +375,11 @@ class JetReconstructionTraining(JetReconstructionNetwork):
                 weights *= self.jet_weights_tensor[batch.num_vectors]
 
             masks = masks.unsqueeze(1)
-            symmetric_losses = (weights * symmetric_losses).sum(-1) / torch.clamp(masks.sum(-1), 1, None)
-            assignment_loss, detection_loss = torch.unbind(symmetric_losses, 1)
+            weighted_losses = weights * symmetric_losses
+            # Assignment NLL: average over events where the particle exists.
+            assignment_loss = weighted_losses[:, 0].sum(-1) / torch.clamp(masks[:, 0].sum(-1), 1, None)
+            # Detection BCE is defined for every event (positives and negatives): average over the batch.
+            detection_loss = weighted_losses[:, 1].mean(-1)
 
             total_loss = []
             if self.options.assignment_loss_scale > 0:

@@ -16,7 +16,7 @@ from collections import defaultdict
 
 def default_assignment_fn(outputs: Outputs):
     return extract_predictions([
-        np.nan_to_num(assignment.detach().cpu().numpy(), -np.inf)
+        np.nan_to_num(assignment.detach().cpu().numpy(), nan=-np.inf, neginf=-np.inf)
         for assignment in outputs.assignments
     ])
 
@@ -54,7 +54,10 @@ def load_model(
 ) -> JetReconstructionModel:
     # Load the best-performing checkpoint on validation data
     if checkpoint is None:
-        checkpoint = sorted(glob(f"{log_directory}/checkpoints/epoch*"))[-1]
+        import re
+        candidates = glob(f"{log_directory}/checkpoints/epoch*")
+        score = lambda path: float(re.search(r"validation_average_jet_accuracy=([0-9.]+?)(?:\.ckpt|-v\d+\.ckpt)$", path).group(1))
+        checkpoint = max(candidates, key=score)
         print(f"Loading: {checkpoint}")
 
     checkpoint = torch.load(checkpoint, map_location='cpu')
@@ -144,7 +147,10 @@ def evaluate_on_test_dataset(
         ):
             # Get the probability of the best assignment.
             # Have to use explicit function call here to construct index dynamically.
-            assignment_probability = assignment_probability.__getitem__((dummy_index, *assignment.T))
+            valid = torch.from_numpy((assignment >= 0).all(1)).to(assignment_probability.device)
+            safe_assignment = np.clip(assignment, 0, None)
+            assignment_probability = assignment_probability.__getitem__((dummy_index, *safe_assignment.T))
+            assignment_probability = assignment_probability.masked_fill(~valid, -np.inf)
 
             # Convert from log-probability to probability.
             assignment_probability = torch.exp(assignment_probability)

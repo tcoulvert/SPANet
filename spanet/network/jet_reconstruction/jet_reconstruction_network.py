@@ -31,7 +31,7 @@ TArray = np.ndarray
 
 def default_assignment_fn(outputs: Outputs):
     return extract_predictions([
-        np.nan_to_num(assignment.detach().cpu().numpy(), -np.inf)
+        np.nan_to_num(assignment.detach().cpu().numpy(), nan=-np.inf, neginf=-np.inf)
         for assignment in outputs.assignments
     ])
 
@@ -87,7 +87,8 @@ class JetReconstructionNetwork(JetReconstructionBase):
                 event_particle_name,
                 self.event_info.product_particles[event_particle_name].names,
                 product_symmetry,
-                self.enable_softmax
+                self.enable_softmax,
+                self.event_info.product_particles[event_particle_name].sources
             )
             for event_particle_name, product_symmetry
             in self.event_info.product_symmetries.items()
@@ -137,6 +138,15 @@ class JetReconstructionNetwork(JetReconstructionBase):
             "EVENT": event_vector
         }
 
+        # Source index of every vector in the concatenated sequence (globals contribute one vector).
+        source_ids = torch.cat([
+            torch.full(
+                (1 if self.event_info.input_types[name] == "GLOBAL" else source.mask.shape[1],),
+                index, dtype=torch.long, device=hidden.device
+            )
+            for index, (name, source) in enumerate(zip(self.event_info.input_names, sources))
+        ])
+
         # Pass the shared hidden state to every decoder branch
         for decoder in self.branch_decoders:
             (
@@ -145,7 +155,7 @@ class JetReconstructionNetwork(JetReconstructionBase):
                 assignment_mask,
                 event_particle_vector,
                 product_particle_vectors
-            ) = decoder(hidden, padding_masks, sequence_masks, global_masks)
+            ) = decoder(hidden, padding_masks, sequence_masks, global_masks, source_ids)
 
             assignments.append(assignment)
             detections.append(detection)
@@ -204,7 +214,7 @@ class JetReconstructionNetwork(JetReconstructionBase):
         # Run the base prediction step
         with torch.no_grad():
             assignments = [
-                np.nan_to_num(assignment.detach().cpu().numpy(), -np.inf)
+                np.nan_to_num(assignment.detach().cpu().numpy(), nan=-np.inf, neginf=-np.inf)
                 for assignment in self.forward(sources).assignments
             ]
 

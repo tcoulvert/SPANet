@@ -1,4 +1,4 @@
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 from opt_einsum import contract_expression
 
 import torch
@@ -23,7 +23,8 @@ class BranchDecoder(nn.Module):
         particle_name: str,
         product_names: List[str],
         product_symmetries: Symmetries,
-        softmax_output: bool = True
+        softmax_output: bool = True,
+        product_sources: Tuple[int, ...] = ()
     ):
         super(BranchDecoder, self).__init__()
 
@@ -32,6 +33,8 @@ class BranchDecoder(nn.Module):
         self.product_names = product_names
         self.softmax_output = softmax_output
         self.combinatorial_scale = options.combinatorial_scale
+        # Input-source index (into event_info.input_names) of every daughter, -1 = any source.
+        self.product_sources = tuple(int(x) for x in product_sources)
 
         # Each branch has a personal encoder stack to extract particle-level data
         self.encoder = StackedEncoder(
@@ -101,6 +104,7 @@ class BranchDecoder(nn.Module):
             padding_mask: Tensor,
             sequence_mask: Tensor,
             global_mask: Tensor,
+            source_ids: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         """ Create a distribution over jets for a given particle and a probability of its existence.
 
@@ -155,6 +159,16 @@ class BranchDecoder(nn.Module):
         )
 
         assignment_mask = self.create_output_mask(assignment, sequential_sequence_mask)
+
+        # Restrict every daughter axis to vectors coming from its declared input source.
+        if source_ids is not None and len(self.product_sources) == self.degree:
+            sequential_source_ids = source_ids[global_mask]
+            for axis, source in enumerate(self.product_sources):
+                if source < 0:
+                    continue
+                shape = [1] * (self.degree + 1)
+                shape[axis + 1] = -1
+                assignment_mask = assignment_mask & (sequential_source_ids == source).view(shape)
 
         # ---------------------------------------------------------------------------
         # Need to reshape output to make softmax-calculation easier.

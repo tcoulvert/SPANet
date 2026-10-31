@@ -220,7 +220,7 @@ class JetReconstructionDataset(Dataset):
                 target_weight = self.dataset(hdf5_file, [SpecialKey.Targets, event_particle], SpecialKey.Weight)
             except KeyError:
                 print("Warning: no target weights in the dataset, creating ones weights")
-                target_weight = torch.ones_like(target_mask, dtype=float)
+                target_weight = torch.ones_like(target_mask, dtype=torch.float32)
 
             target_data = target_data[limit_index]
             target_mask = target_mask[limit_index]

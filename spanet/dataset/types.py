@@ -127,6 +127,10 @@ class SpecialKey(str, Enum):
     Classifications = "CLASSIFICATIONS"
     Embeddings = "EMBEDDINGS"
 
+    # Python >= 3.12 formats str-mixin enums as "SpecialKey.Targets" in f-strings; keep the raw value.
+    def __str__(self) -> str:
+        return str(self.value)
+
 
 class Source(NamedTuple):
     data: Tensor
